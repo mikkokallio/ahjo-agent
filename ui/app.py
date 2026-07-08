@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from cache_db import get_agenda as db_get_agenda, put_agenda as db_put_agenda
 from cache_db import get_attachments as db_get_attachments, put_attachments as db_put_attachments
 from cache_db import invalidate_attachments as db_invalidate_attachments
+from cache_db import get_summary as db_get_summary, put_summary as db_put_summary
 
 logger = logging.getLogger("ahjo-ui")
 
@@ -474,6 +475,10 @@ async def get_attachments_bulk(request: Request):
         if cached is not None:
             results[url] = cached
 
+    # Kick off background prefetch of summaries from blob
+    if results:
+        asyncio.create_task(_prefetch_summaries_from_blob(results))
+
     return JSONResponse({"results": results})
 
 
@@ -606,9 +611,114 @@ async def process_attachment(request: Request):
         return JSONResponse({"error": str(e)}, status_code=502)
 
 
+BLOB_ACCOUNT_URL = "https://stpdfprocahjo.blob.core.windows.net"
+BLOB_CONTAINER_CACHE = "pdf-cache"
+
+_cached_storage_token = None
+_storage_token_expires_at = 0
+_blob_client: httpx.AsyncClient | None = None
+
+
+def _get_storage_token_sync() -> str:
+    """Acquire storage-scoped token with caching."""
+    global _cached_storage_token, _storage_token_expires_at
+    now = time.time()
+    if _cached_storage_token and now < _storage_token_expires_at - 300:
+        return _cached_storage_token
+    cred = _get_credential()
+    token = cred.get_token("https://storage.azure.com/.default")
+    _cached_storage_token = token.token
+    _storage_token_expires_at = token.expires_on
+    return _cached_storage_token
+
+
+async def _get_storage_token() -> str:
+    return await asyncio.to_thread(_get_storage_token_sync)
+
+
+def _get_blob_client() -> httpx.AsyncClient:
+    """Persistent async client for blob storage (reuses TCP/TLS connection)."""
+    global _blob_client
+    if _blob_client is None:
+        _blob_client = httpx.AsyncClient(
+            base_url=BLOB_ACCOUNT_URL,
+            timeout=30,
+            http2=True,
+        )
+    return _blob_client
+
+
+def _pdf_cache_key(pdf_url: str) -> str:
+    import hashlib
+    return hashlib.sha256(pdf_url.encode()).hexdigest()[:16]
+
+
+async def _read_blob_summary(pdf_url: str) -> dict | None:
+    """Read summary directly from blob storage (bypasses Azure Function)."""
+    blob_key = _pdf_cache_key(pdf_url)
+    token = await _get_storage_token()
+    try:
+        client = _get_blob_client()
+        resp = await client.get(
+            f"/{BLOB_CONTAINER_CACHE}/{blob_key}",
+            headers={"Authorization": f"Bearer {token}", "x-ms-version": "2023-11-03"},
+        )
+        if resp.status_code == 200:
+            return json.loads(resp.text)
+    except Exception as e:
+        logger.warning(f"Direct blob read failed for {blob_key}: {e}")
+    return None
+
+
+async def _prefetch_summaries_from_blob(results: dict):
+    """Background task: pull all blob-cached summaries into local cache."""
+    try:
+        token = await _get_storage_token()
+    except Exception:
+        return
+
+    to_fetch = []  # (case_url, att_num, pdf_url)
+    for case_url, attachments in results.items():
+        for att in attachments:
+            if att.get("cached") and att.get("pdf_url"):
+                # Skip if already in local summary cache
+                if db_get_summary(case_url, att["num"]) is None:
+                    to_fetch.append((case_url, att["num"], att["pdf_url"]))
+
+    if not to_fetch:
+        return
+
+    logger.info(f"Prefetching {len(to_fetch)} summaries from blob...")
+    client = _get_blob_client()
+    sem = asyncio.Semaphore(6)
+
+    async def fetch_one(case_url, att_num, pdf_url):
+        async with sem:
+            blob_key = _pdf_cache_key(pdf_url)
+            try:
+                resp = await client.get(
+                    f"/{BLOB_CONTAINER_CACHE}/{blob_key}",
+                    headers={"Authorization": f"Bearer {token}", "x-ms-version": "2023-11-03"},
+                )
+                if resp.status_code == 200:
+                    blob_data = json.loads(resp.text)
+                    summary_data = {
+                        "summary": blob_data.get("text", ""),
+                        "pages": blob_data.get("pages"),
+                        "tokens": blob_data.get("tokens"),
+                        "category": blob_data.get("category"),
+                    }
+                    db_put_summary(case_url, att_num, summary_data)
+            except Exception:
+                pass
+
+    await asyncio.gather(*[fetch_one(cu, an, pu) for cu, an, pu in to_fetch])
+    logger.info(f"Prefetch complete: {len(to_fetch)} summaries attempted")
+
+
 @app.post("/api/attachment-summary")
 async def attachment_summary(request: Request):
-    """Fetch summary for a (cached) attachment. Triggers process which hits cache instantly."""
+    """Fetch summary for an attachment. Local cache -> blob direct -> Azure Function."""
     body = await request.json()
     case_url = body.get("case_url", "")
     attachment_num = body.get("attachment_num")
@@ -616,6 +726,33 @@ async def attachment_summary(request: Request):
     if not case_url or attachment_num is None:
         return JSONResponse({"error": "case_url and attachment_num required"}, status_code=400)
 
+    # 1. Check local SQLite/memory cache (instant, sub-ms)
+    cached = db_get_summary(case_url, attachment_num)
+    if cached is not None:
+        return JSONResponse(cached)
+
+    # 2. If attachment metadata says it's cached in blob, read directly (fast, ~200ms)
+    attachments = db_get_attachments(case_url)
+    att_meta = None
+    if attachments:
+        for att in attachments:
+            if att.get("num") == attachment_num:
+                att_meta = att
+                break
+
+    if att_meta and att_meta.get("cached") and att_meta.get("pdf_url"):
+        blob_data = await _read_blob_summary(att_meta["pdf_url"])
+        if blob_data:
+            summary_data = {
+                "summary": blob_data.get("text", ""),
+                "pages": blob_data.get("pages"),
+                "tokens": blob_data.get("tokens"),
+                "category": blob_data.get("category"),
+            }
+            db_put_summary(case_url, attachment_num, summary_data)
+            return JSONResponse(summary_data)
+
+    # 3. Fall back to Azure Function (slow, cold start possible)
     process_url = f"{PDF_PROCESSOR_URL}/api/process"
     if PDF_PROCESSOR_KEY:
         process_url += f"?code={PDF_PROCESSOR_KEY}"
@@ -644,12 +781,14 @@ async def attachment_summary(request: Request):
             status_data = status_resp.json()
             for att_result in status_data.get("results", []):
                 if att_result.get("num") == attachment_num:
-                    return JSONResponse({
+                    summary_data = {
                         "summary": att_result.get("text", ""),
                         "pages": att_result.get("pages"),
                         "tokens": att_result.get("tokens"),
                         "category": att_result.get("category"),
-                    })
+                    }
+                    db_put_summary(case_url, attachment_num, summary_data)
+                    return JSONResponse(summary_data)
             return JSONResponse({"error": "Attachment not found in results"}, status_code=404)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=502)
