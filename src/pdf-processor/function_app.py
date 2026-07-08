@@ -238,18 +238,29 @@ def _process_single_pdf(att: dict, token_provider) -> dict:
 
     # Summarize large docs
     if token_est > LARGE_THRESHOLD:
-        import time as _time
         chunks = _chunk_text(full_text, max_tokens=3000)
-        logging.info(f"Summarizing {att['name']}: {len(chunks)} chunks, ~{token_est} tokens, ~{len(chunks) * TOKENS_PER_CALL} TPM needed")
-        summaries = []
-        for i, chunk in enumerate(chunks):
-            summary = _llm_summarize(chunk, att["name"], i + 1, len(chunks), token_provider)
-            summaries.append(summary)
-            # Throttle: wait between calls to stay within rate limit
-            if i < len(chunks) - 1:
-                _time.sleep(MIN_DELAY_BETWEEN_CALLS)
-        final_text = "\n\n".join(summaries)
+        logging.info(f"Summarizing {att['name']}: {len(chunks)} chunks, ~{token_est} tokens")
         del full_text
+
+        # Parallel chunk summarization (4 concurrent, with rate-limit retries in _llm_summarize)
+        summaries = [None] * len(chunks)
+
+        def summarize_chunk(args):
+            idx, chunk = args
+            return idx, _llm_summarize(chunk, att["name"], idx + 1, len(chunks), token_provider)
+
+        with ThreadPoolExecutor(max_workers=4) as chunk_executor:
+            futures = {chunk_executor.submit(summarize_chunk, (i, c)): i for i, c in enumerate(chunks)}
+            for future in _as_completed(futures):
+                try:
+                    idx, result_text = future.result()
+                    summaries[idx] = result_text
+                except Exception as e:
+                    idx = futures[future]
+                    logging.error(f"Chunk {idx+1}/{len(chunks)} failed for {att['name']}: {e}")
+                    summaries[idx] = f"[Summarization failed for section {idx+1}: {e}]"
+
+        final_text = "\n\n".join(s for s in summaries if s)
         category = "summarized"
     else:
         final_text = full_text

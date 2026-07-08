@@ -534,25 +534,35 @@ async def _scrape_attachments(case_url: str) -> list:
                         attachments.append({"num": num, "name": name, "pdf_url": "", "published": False})
             break
 
-    # Check cache status from PDF processor
-    if attachments and PDF_PROCESSOR_URL:
-        cache_url = f"{PDF_PROCESSOR_URL}/api/cache-check"
-        if PDF_PROCESSOR_KEY:
-            cache_url += f"?code={PDF_PROCESSOR_KEY}"
+    # Check cache status directly from blob (no Azure Function dependency)
+    if attachments:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(cache_url, json={"case_url": case_url})
-                if resp.status_code == 200:
-                    cache_data = resp.json()
-                    cache_map = {}
-                    for att in cache_data.get("attachments", []):
-                        cache_map[att.get("num")] = att
-                    for att in attachments:
-                        cached_info = cache_map.get(att["num"], {})
-                        att["cached"] = cached_info.get("cached", False)
-                        att["pages"] = cached_info.get("pages")
-                        att["tokens"] = cached_info.get("tokens")
-                        att["category"] = cached_info.get("category")
+            token = await _get_storage_token()
+            client = _get_blob_client()
+            sem = asyncio.Semaphore(6)
+
+            async def check_one(att):
+                if not att.get("pdf_url"):
+                    return
+                async with sem:
+                    blob_key = _pdf_cache_key(att["pdf_url"])
+                    try:
+                        resp = await client.get(
+                            f"/{BLOB_CONTAINER_CACHE}/{blob_key}",
+                            headers={"Authorization": f"Bearer {token}", "x-ms-version": "2023-11-03"},
+                        )
+                        if resp.status_code == 200:
+                            blob_data = json.loads(resp.text)
+                            att["cached"] = True
+                            att["pages"] = blob_data.get("pages")
+                            att["tokens"] = blob_data.get("tokens")
+                            att["category"] = blob_data.get("category")
+                        else:
+                            att["cached"] = False
+                    except Exception:
+                        att["cached"] = False
+
+            await asyncio.gather(*[check_one(att) for att in attachments if att.get("published")])
         except Exception:
             pass  # Cache check is best-effort
 
@@ -680,7 +690,7 @@ async def _prefetch_summaries_from_blob(results: dict):
     to_fetch = []  # (case_url, att_num, pdf_url)
     for case_url, attachments in results.items():
         for att in attachments:
-            if att.get("cached") and att.get("pdf_url"):
+            if att.get("pdf_url"):
                 # Skip if already in local summary cache
                 if db_get_summary(case_url, att["num"]) is None:
                     to_fetch.append((case_url, att["num"], att["pdf_url"]))
@@ -709,6 +719,17 @@ async def _prefetch_summaries_from_blob(results: dict):
                         "category": blob_data.get("category"),
                     }
                     db_put_summary(case_url, att_num, summary_data)
+                    # Fix stale attachment metadata
+                    atts = db_get_attachments(case_url)
+                    if atts:
+                        for a in atts:
+                            if a.get("num") == att_num and not a.get("cached"):
+                                a["cached"] = True
+                                a["pages"] = blob_data.get("pages")
+                                a["tokens"] = blob_data.get("tokens")
+                                a["category"] = blob_data.get("category")
+                                db_put_attachments(case_url, atts)
+                                break
             except Exception:
                 pass
 
@@ -731,7 +752,7 @@ async def attachment_summary(request: Request):
     if cached is not None:
         return JSONResponse(cached)
 
-    # 2. If attachment metadata says it's cached in blob, read directly (fast, ~200ms)
+    # 2. Try reading directly from blob (works even if local metadata says cached=False)
     attachments = db_get_attachments(case_url)
     att_meta = None
     if attachments:
@@ -740,7 +761,7 @@ async def attachment_summary(request: Request):
                 att_meta = att
                 break
 
-    if att_meta and att_meta.get("cached") and att_meta.get("pdf_url"):
+    if att_meta and att_meta.get("pdf_url"):
         blob_data = await _read_blob_summary(att_meta["pdf_url"])
         if blob_data:
             summary_data = {
@@ -750,6 +771,13 @@ async def attachment_summary(request: Request):
                 "category": blob_data.get("category"),
             }
             db_put_summary(case_url, attachment_num, summary_data)
+            # Fix stale cached=False in attachment metadata
+            if not att_meta.get("cached"):
+                att_meta["cached"] = True
+                att_meta["pages"] = blob_data.get("pages")
+                att_meta["tokens"] = blob_data.get("tokens")
+                att_meta["category"] = blob_data.get("category")
+                db_put_attachments(case_url, attachments)
             return JSONResponse(summary_data)
 
     # 3. Fall back to Azure Function (slow, cold start possible)
