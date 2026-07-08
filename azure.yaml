@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+requiredVersions:
+    extensions:
+        azure.ai.agents: '>=0.1.0-preview'
+name: ai-foundry-starter-basic
+services:
+    ahjo-meetings:
+        project: ./src/ahjo-meetings
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project-ahjo-agent
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.4
+            - name: AZURE_OPENAI_ENDPOINT
+              value: https://ai-account-mapx4sxw6thvg.openai.azure.com/
+            - name: PDF_PROCESSOR_URL
+              value: ${PDF_PROCESSOR_URL}
+            - name: PDF_PROCESSOR_KEY
+              value: ${PDF_PROCESSOR_KEY}
+        kind: hosted
+        name: ahjo-meetings
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    ai-project-ahjo-agent:
+        project: ""
+        host: azure.ai.project
+        language: ""
+        deployments:
+            - model:
+                format: OpenAI
+                name: gpt-5.4
+                version: "2026-03-05"
+              name: gpt-5.4
+              sku:
+                capacity: 50
+                name: GlobalStandard
+infra:
+    provider: bicep
+    path: ./infra

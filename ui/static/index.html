@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ahjo</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-deep: #0a0a0f;
+  --bg-surface: rgba(18, 18, 28, 0.7);
+  --bg-glass: rgba(25, 25, 40, 0.5);
+  --bg-hover: rgba(45, 45, 70, 0.4);
+  --bg-active: rgba(60, 60, 100, 0.3);
+  --border: rgba(80, 80, 120, 0.2);
+  --border-focus: rgba(120, 120, 180, 0.4);
+  --text-primary: #e8e8f0;
+  --text-secondary: #9090a8;
+  --text-muted: #606078;
+  --accent: #7c8cf8;
+  --accent-dim: rgba(124, 140, 248, 0.1);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 300px 1fr 320px;
+  height: 100vh;
+  gap: 1px;
+  background: var(--border);
+  transition: grid-template-columns 0.25s ease;
+}
+
+#app.left-collapsed {
+  grid-template-columns: 0px 1fr 320px;
+}
+#app.right-collapsed {
+  grid-template-columns: 300px 1fr 0px;
+}
+#app.left-collapsed.right-collapsed {
+  grid-template-columns: 0px 1fr 0px;
+}
+
+/* Left Pane - Meetings */
+.pane-left {
+  background: var(--bg-surface);
+  backdrop-filter: blur(40px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: opacity 0.2s ease;
+}
+
+#app.left-collapsed .pane-left {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pane-header {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pane-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: background var(--transition), color var(--transition);
+  line-height: 1;
+}
+.pane-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+#toggleLeft { display: none; }
+#toggleRight { display: none; }
+#app.left-collapsed #toggleLeft { display: block; }
+#app.right-collapsed #toggleRight { display: block; }
+
+.pane-header h2 {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.meetings-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.meetings-list::-webkit-scrollbar { width: 4px; }
+.meetings-list::-webkit-scrollbar-track { background: transparent; }
+.meetings-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.date-group { margin-bottom: 4px; }
+
+.date-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+  user-select: none;
+}
+
+.date-header:hover { background: var(--bg-hover); }
+
+.date-header .chevron {
+  font-size: 10px;
+  transition: transform var(--transition);
+  color: var(--text-muted);
+}
+
+.date-group.collapsed .chevron { transform: rotate(-90deg); }
+.date-group.collapsed .date-meetings { display: none; }
+
+.date-header .count {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.meeting-item {
+  padding: 10px 12px 10px 32px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meeting-item:hover { background: var(--bg-hover); }
+.meeting-item.active { background: var(--bg-active); border-left: 2px solid var(--accent); padding-left: 30px; }
+
+.meeting-item .time {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.meeting-item .status {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+/* Center Pane - Chat */
+.pane-center {
+  background: var(--bg-deep);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  backdrop-filter: blur(20px);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.chat-header h1 {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.chat-header .subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chat-messages::-webkit-scrollbar { width: 4px; }
+.chat-messages::-webkit-scrollbar-track { background: transparent; }
+.chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.message {
+  max-width: 85%;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  line-height: 1.6;
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.message.user {
+  align-self: flex-end;
+  background: var(--accent-dim);
+  border: 1px solid rgba(124, 140, 248, 0.15);
+  color: var(--text-primary);
+}
+
+.message.assistant {
+  align-self: flex-start;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(10px);
+}
+
+.message.assistant ul, .message.assistant ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.message.assistant li {
+  margin-bottom: 4px;
+}
+.message.assistant strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.message.system {
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 8px;
+}
+
+.chat-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--text-muted);
+}
+
+.chat-empty h3 {
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.chat-empty p {
+  font-size: 13px;
+  max-width: 300px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.chat-input-area {
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  backdrop-filter: blur(20px);
+  flex-shrink: 0;
+}
+
+.chat-input-wrap {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.chat-input {
+  flex: 1;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  min-height: 44px;
+  max-height: 120px;
+  line-height: 1.5;
+  transition: border-color var(--transition);
+  overflow: hidden;
+}
+
+.chat-input:focus { border-color: var(--border-focus); }
+.chat-input::placeholder { color: var(--text-muted); }
+
+.chat-send {
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--transition), transform var(--transition);
+  white-space: nowrap;
+}
+
+.chat-send:hover { opacity: 0.9; }
+.chat-send:active { transform: scale(0.97); }
+.chat-send:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+/* Right Pane - Context */
+.pane-right {
+  background: var(--bg-surface);
+  backdrop-filter: blur(40px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pane-right {
+  transition: opacity 0.2s ease;
+}
+
+#app.right-collapsed .pane-right {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pane-right .pane-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.pane-right-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.pane-right-content::-webkit-scrollbar { width: 4px; }
+.pane-right-content::-webkit-scrollbar-track { background: transparent; }
+.pane-right-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.pane-right-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Agenda items */
+.agenda-group { margin-bottom: 2px; }
+
+.agenda-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+  user-select: none;
+  line-height: 1.4;
+}
+
+.agenda-header:hover { background: var(--bg-hover); }
+.agenda-header.active { background: var(--bg-active); }
+
+.agenda-header .chevron {
+  font-size: 10px;
+  margin-top: 2px;
+  transition: transform var(--transition);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.agenda-group.collapsed .chevron { transform: rotate(-90deg); }
+.agenda-group.collapsed .agenda-attachments { display: none; }
+
+.agenda-header .agenda-num {
+  font-weight: 700;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  min-width: fit-content;
+  margin-right: 6px;
+}
+
+.agenda-header .agenda-title {
+  flex: 1;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Attachment items */
+.agenda-attachments {
+  padding: 0 4px 4px 28px;
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+  line-height: 1.3;
+}
+
+.attachment-item:hover { background: var(--bg-hover); }
+.attachment-item.active { background: var(--bg-active); border-left: 2px solid var(--accent); padding-left: 8px; }
+.attachment-item.unpublished { opacity: 0.5; cursor: default; }
+
+.attachment-name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.attachment-meta {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.attachment-badge {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  white-space: nowrap;
+}
+
+.attachment-badge.cached {
+  background: rgba(80, 200, 120, 0.12);
+  color: rgba(80, 200, 120, 0.8);
+}
+
+.attachment-badge.skipped {
+  background: rgba(240, 180, 60, 0.12);
+  color: rgba(240, 180, 60, 0.8);
+}
+
+.agenda-loading {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.att-loading {
+  padding: 4px 10px 4px 28px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Loading state */
+.loading-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: pulse 1.2s infinite;
+  margin: 0 2px;
+}
+.loading-dot:nth-child(2) { animation-delay: 0.2s; }
+.loading-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes pulse {
+  0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+  30% { opacity: 1; transform: scale(1); }
+}
+
+/* Status message (tool calls in progress) */
+.message.status-msg {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+  border: none;
+  background: none;
+  padding: 4px 16px;
+  backdrop-filter: none;
+  animation: status-pulse 2s ease-in-out infinite;
+}
+.message.status-msg.error {
+  color: #e06060;
+  animation: none;
+}
+@keyframes status-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* Attachment Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.modal-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.modal-dialog {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(40px);
+  width: 90%;
+  max-width: 640px;
+  min-height: 200px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 20px 24px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-header h3 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.4;
+  padding-right: 16px;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background var(--transition), color var(--transition);
+  flex-shrink: 0;
+}
+.modal-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 24px 20px;
+}
+
+.modal-body::-webkit-scrollbar { width: 4px; }
+.modal-body::-webkit-scrollbar-track { background: transparent; }
+.modal-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.modal-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+
+.modal-meta dt {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.modal-meta dd {
+  color: var(--text-secondary);
+}
+
+.modal-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+
+.modal-summary-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.modal-summary {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.modal-no-summary {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.modal-process-btn {
+  margin-top: 12px;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 16px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--transition);
+}
+.modal-process-btn:hover { opacity: 0.9; }
+.modal-process-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Responsive: hide right pane on small screens */
+@media (max-width: 1100px) {
+  #app:not(.right-collapsed) { grid-template-columns: 280px 1fr; }
+  .pane-right { display: none; }
+  #toggleRight { display: none; }
+}
+@media (max-width: 700px) {
+  #app { grid-template-columns: 1fr; }
+  .pane-left { display: none; }
+  #toggleLeft { display: none; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Left Pane -->
+  <div class="pane-left">
+    <div class="pane-header">
+      <h2>Kokoukset</h2>
+      <button class="pane-toggle" onclick="togglePane('left')" title="Piilota">&times;</button>
+    </div>
+    <div class="meetings-list" id="meetingsList">
+      <div class="chat-empty" id="meetingsLoading">
+        <p>Ladataan...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Center Pane -->
+  <div class="pane-center">
+    <div class="chat-header" id="chatHeader">
+      <button class="pane-toggle" id="toggleLeft" onclick="togglePane('left')" title="Kokoukset">&#9776;</button>
+      <div style="flex:1;min-width:0">
+        <h1 id="chatTitle">Ahjo</h1>
+        <div class="subtitle" id="chatSubtitle">Valitse kokous vasemmalta</div>
+      </div>
+      <button class="pane-toggle" id="toggleRight" onclick="togglePane('right')" title="Sisältö">&#9776;</button>
+    </div>
+    <div class="chat-messages" id="chatMessages">
+      <div class="chat-empty" id="chatEmpty">
+        <h3>Ei valittua kokousta</h3>
+        <p>Valitse kokous vasemmalta paneelista aloittaaksesi.</p>
+      </div>
+    </div>
+    <div class="chat-input-area">
+      <div class="chat-input-wrap">
+        <textarea class="chat-input" id="chatInput" placeholder="Kirjoita viesti..." rows="1" disabled></textarea>
+        <button class="chat-send" id="chatSend" disabled>Lähetä</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Pane -->
+  <div class="pane-right">
+    <div class="pane-header">
+      <h2>Sisältö</h2>
+      <button class="pane-toggle" onclick="togglePane('right')" title="Piilota">&times;</button>
+    </div>
+    <div class="pane-right-content" id="rightPaneContent">
+      <div class="pane-right-empty" id="rightPaneEmpty">
+        Valitse kokous nähdäksesi<br>asialistan ja liitteet.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Attachment Detail Modal -->
+<div class="modal-overlay" id="attachmentModal">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 id="modalTitle"></h3>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+const state = {
+  meetings: {},
+  selectedMeeting: null,
+  selectedAgendaItem: null,
+  selectedAttachment: null,
+  threads: {},
+  sending: false,
+  agenda: [],         // current meeting's agenda items
+  attachments: {},    // case_url -> attachments array
+};
+
+// --- Meetings ---
+async function loadMeetings() {
+  try {
+    const resp = await fetch('/api/meetings?days_back=30&days_ahead=14');
+    state.meetings = await resp.json();
+    renderMeetings();
+  } catch (e) {
+    document.getElementById('meetingsLoading').innerHTML = '<p>Virhe ladattaessa</p>';
+  }
+}
+
+function renderMeetings() {
+  const container = document.getElementById('meetingsList');
+  const dates = Object.keys(state.meetings).sort().reverse();
+
+  if (!dates.length) {
+    container.innerHTML = '<div class="chat-empty"><p>Ei kokouksia</p></div>';
+    return;
+  }
+
+  container.innerHTML = dates.map(dateStr => {
+    const meetings = state.meetings[dateStr];
+    const [y, m, d] = dateStr.split('-');
+    const label = `${d}.${m}.`;
+    return `
+      <div class="date-group" data-date="${dateStr}">
+        <div class="date-header" onclick="toggleGroup(this)">
+          <span class="chevron">&#9662;</span>
+          <span>${label}</span>
+          <span class="count">(${meetings.length})</span>
+        </div>
+        <div class="date-meetings">
+          ${meetings.map(m => `
+            <div class="meeting-item" data-key="${dateStr}_${m.policymaker}" onclick="selectMeeting('${dateStr}', '${m.policymaker}')">
+              ${m.policymaker_name}
+              <div class="time">${m.start_time || ''}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function toggleGroup(el) {
+  el.parentElement.classList.toggle('collapsed');
+}
+
+function selectMeeting(date, policymaker) {
+  const key = `${date}_${policymaker}`;
+  state.selectedMeeting = { key, date, policymaker };
+  state.selectedAgendaItem = null;
+  state.selectedAttachment = null;
+
+  // Find meeting data
+  const meetings = state.meetings[date] || [];
+  const meeting = meetings.find(m => m.policymaker === policymaker);
+
+  // Update active state
+  document.querySelectorAll('.meeting-item').forEach(el => el.classList.remove('active'));
+  const activeEl = document.querySelector(`[data-key="${key}"]`);
+  if (activeEl) activeEl.classList.add('active');
+
+  // Update header
+  const [y, m, d] = date.split('-');
+  document.getElementById('chatTitle').textContent = meeting ? meeting.policymaker_name : policymaker;
+  document.getElementById('chatSubtitle').textContent = `${d}.${m}.${y}`;
+
+  // Enable input
+  document.getElementById('chatInput').disabled = false;
+  document.getElementById('chatSend').disabled = false;
+
+  // Render thread
+  renderThread(key);
+
+  // Load agenda in right pane
+  loadAgenda(meeting);
+}
+
+// --- Right Pane: Agenda & Attachments ---
+async function loadAgenda(meeting) {
+  const container = document.getElementById('rightPaneContent');
+  const meetingLink = meeting ? meeting.meeting_link : '';
+
+  if (!meetingLink) {
+    container.innerHTML = '<div class="pane-right-empty">Asialistaa ei ole vielä julkaistu.</div>';
+    state.agenda = [];
+    return;
+  }
+
+  container.innerHTML = '<div class="agenda-loading">Ladataan asialistaa...</div>';
+
+  try {
+    const resp = await fetch(`/api/agenda?meeting_link=${encodeURIComponent(meetingLink)}`);
+    const data = await resp.json();
+    state.agenda = data.items || [];
+    state.attachments = {};
+    renderAgenda();
+    // Pre-fetch all attachments in background
+    prefetchAttachments();
+  } catch (e) {
+    container.innerHTML = '<div class="pane-right-empty">Virhe ladattaessa asialistaa.</div>';
+  }
+}
+
+async function prefetchAttachments() {
+  // Fetch all attachments in a single bulk request
+  const case_urls = state.agenda.filter(it => it.case_url).map(it => it.case_url);
+  if (!case_urls.length) return;
+
+  try {
+    const resp = await fetch('/api/attachments-bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ case_urls }),
+    });
+    const data = await resp.json();
+    const results = data.results || {};
+
+    // Populate state and update DOM
+    for (const [url, atts] of Object.entries(results)) {
+      state.attachments[url] = atts;
+      const item = state.agenda.find(it => it.case_url === url);
+      if (item) {
+        const idx = state.agenda.indexOf(item);
+        const attContainer = document.getElementById(`att-${idx}`);
+        if (attContainer && !attContainer.querySelector('.attachment-item')) {
+          attContainer.innerHTML = renderAttachments(idx, atts);
+        }
+      }
+    }
+  } catch (e) { /* best-effort */ }
+}
+
+function renderAgenda() {
+  const container = document.getElementById('rightPaneContent');
+
+  if (!state.agenda.length) {
+    container.innerHTML = '<div class="pane-right-empty">Ei asialistan kohtia.</div>';
+    return;
+  }
+
+  container.innerHTML = state.agenda.map((item, idx) => {
+    const parsed = parseAgendaTitle(item.title);
+    return `
+    <div class="agenda-group collapsed" data-idx="${idx}">
+      <div class="agenda-header${state.selectedAgendaItem === idx ? ' active' : ''}" onclick="selectAgendaItem(${idx})">
+        <span class="chevron">&#9662;</span>
+        <span class="agenda-num">${parsed.num}</span>
+        <span class="agenda-title">${escapeHtml(parsed.title)}</span>
+      </div>
+      <div class="agenda-attachments" id="att-${idx}">
+        ${state.attachments[item.case_url] ? renderAttachments(idx, state.attachments[item.case_url]) : ''}
+      </div>
+    </div>
+  `}).join('');
+}
+
+function parseAgendaTitle(title) {
+  // Patterns: "1. / 460 §Title" or "1\u2002Title" or "1 Title"
+  const match = title.match(/^\d+\.?\s*\/?\s*(\d+)\s*§\s*(.*)/);
+  if (match) {
+    return { num: `<strong>${match[1]} \u00A7</strong>`, title: match[2] };
+  }
+  // Simple: strip leading number, keep it as the display num
+  const numMatch = title.match(/^(\d+)[\s\u2002]*(.*)/);
+  if (numMatch) {
+    return { num: `<strong>${numMatch[1]}.</strong>`, title: numMatch[2] };
+  }
+  return { num: '', title: title };
+}
+
+function selectAgendaItem(idx) {
+  const item = state.agenda[idx];
+  if (!item) return;
+
+  const wasSelected = state.selectedAgendaItem === idx;
+  state.selectedAgendaItem = idx;
+  state.selectedAttachment = null;
+
+  // Toggle collapse
+  const group = document.querySelector(`.agenda-group[data-idx="${idx}"]`);
+  if (group) {
+    if (wasSelected) {
+      group.classList.toggle('collapsed');
+    } else {
+      // Collapse others, expand this one
+      document.querySelectorAll('.agenda-group').forEach(g => g.classList.add('collapsed'));
+      group.classList.remove('collapsed');
+    }
+  }
+
+  // Update active state
+  document.querySelectorAll('.agenda-header').forEach(h => h.classList.remove('active'));
+  const header = group ? group.querySelector('.agenda-header') : null;
+  if (header) header.classList.add('active');
+
+  // Load attachments if not loaded
+  if (item.case_url && !state.attachments[item.case_url]) {
+    loadAttachments(idx, item.case_url);
+  }
+}
+
+async function loadAttachments(idx, caseUrl) {
+  const attContainer = document.getElementById(`att-${idx}`);
+  if (!attContainer) return;
+  attContainer.innerHTML = '<div class="att-loading">Ladataan liitteitä...</div>';
+
+  try {
+    const resp = await fetch(`/api/attachments?case_url=${encodeURIComponent(caseUrl)}`);
+    const data = await resp.json();
+    state.attachments[caseUrl] = data.attachments || [];
+    attContainer.innerHTML = renderAttachments(idx, state.attachments[caseUrl]);
+  } catch (e) {
+    attContainer.innerHTML = '<div class="att-loading">Virhe.</div>';
+  }
+}
+
+function renderAttachments(agendaIdx, attachments) {
+  if (!attachments || !attachments.length) {
+    return '<div class="att-loading">Ei liitteitä.</div>';
+  }
+
+  return attachments.map((att, attIdx) => {
+    const isActive = state.selectedAgendaItem === agendaIdx && state.selectedAttachment === attIdx;
+    const unpublished = !att.published;
+    let cls = 'attachment-item';
+    if (isActive) cls += ' active';
+    if (unpublished) cls += ' unpublished';
+
+    let meta = '';
+    if (att.cached && att.pages > 0) {
+      meta += `<span class="attachment-badge cached">${att.pages} s.</span>`;
+    } else if (att.cached && (att.pages === 0 || att.category === 'skipped')) {
+      meta += '<span class="attachment-badge skipped">ohitettu</span>';
+    } else if (unpublished) {
+      meta += '<span class="attachment-badge">ei julkaistu</span>';
+    }
+
+    const onclick = unpublished ? '' : `onclick="selectAttachment(${agendaIdx}, ${attIdx})"`;
+    return `
+      <div class="${cls}" ${onclick} title="${escapeHtml(att.name)}">
+        <span class="attachment-name">${att.num}. ${escapeHtml(att.name)}</span>
+        <span class="attachment-meta">${meta}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+function selectAttachment(agendaIdx, attIdx) {
+  state.selectedAgendaItem = agendaIdx;
+  state.selectedAttachment = attIdx;
+
+  // Update visual state
+  document.querySelectorAll('.attachment-item').forEach(el => el.classList.remove('active'));
+  const agendaGroup = document.querySelector(`.agenda-group[data-idx="${agendaIdx}"]`);
+  if (agendaGroup) {
+    const items = agendaGroup.querySelectorAll('.attachment-item');
+    if (items[attIdx]) items[attIdx].classList.add('active');
+  }
+
+  // Open modal with attachment details
+  const item = state.agenda[agendaIdx];
+  const atts = state.attachments[item?.case_url] || [];
+  const att = atts[attIdx];
+  if (att) openAttachmentModal(att, item);
+}
+
+function openAttachmentModal(att, agendaItem) {
+  const modal = document.getElementById('attachmentModal');
+  const title = document.getElementById('modalTitle');
+  const body = document.getElementById('modalBody');
+
+  title.textContent = `${att.num}. ${att.name}`;
+
+  let metaHtml = '<dl class="modal-meta">';
+  metaHtml += `<dt>Asiakohta</dt><dd>${escapeHtml(agendaItem.title.replace(/^\d+\s*/, ''))}</dd>`;
+  if (att.published) {
+    metaHtml += '<dt>Tila</dt><dd>Julkaistu</dd>';
+  } else {
+    metaHtml += '<dt>Tila</dt><dd>Ei julkaistu</dd>';
+  }
+  if (att.pages != null && att.pages > 0) {
+    metaHtml += `<dt>Sivuja</dt><dd>${att.pages}</dd>`;
+  }
+  if (att.tokens != null && att.tokens > 0) {
+    metaHtml += `<dt>Tokeneita</dt><dd>${att.tokens.toLocaleString('fi')}</dd>`;
+  }
+  if (att.category) {
+    metaHtml += `<dt>Kategoria</dt><dd>${escapeHtml(att.category)}</dd>`;
+  }
+  if (att.cached) {
+    metaHtml += '<dt>Välimuisti</dt><dd>Käsitelty</dd>';
+  }
+  if (att.pdf_url) {
+    const fullPdfUrl = att.pdf_url.startsWith('http') ? att.pdf_url : 'https://paatokset.hel.fi' + att.pdf_url;
+    metaHtml += `<dt>PDF</dt><dd><a href="${fullPdfUrl}" target="_blank" rel="noopener" style="color:var(--accent)">Avaa alkuperäinen</a></dd>`;
+  }
+  metaHtml += '</dl>';
+
+  let summaryHtml = '';
+  if (att.summary) {
+    summaryHtml = `
+      <hr class="modal-divider">
+      <div class="modal-summary-label">Yhteenveto</div>
+      <div class="modal-summary">${renderMarkdown(att.summary)}</div>
+    `;
+  } else if (att.cached) {
+    // Summary exists in cache but we haven't fetched the text yet — fetch it now
+    summaryHtml = `
+      <hr class="modal-divider">
+      <div class="modal-summary-label">Yhteenveto</div>
+      <div class="modal-no-summary" id="modal-summary-loading">Ladataan tiivistelmää...</div>
+    `;
+  } else if (att.published) {
+    summaryHtml = `
+      <hr class="modal-divider">
+      <div class="modal-no-summary">Liitettä ei ole vielä käsitelty.</div>
+      <button class="modal-process-btn" onclick="processAttachment()">Tee tiivistelmä</button>
+    `;
+  }
+
+  body.innerHTML = metaHtml + summaryHtml;
+  modal.classList.add('open');
+  // Store current attachment context for the process button
+  modal._currentAtt = att;
+  modal._currentAgendaItem = agendaItem;
+
+  // Auto-fetch summary for cached attachments
+  if (att.cached && !att.summary && agendaItem.case_url) {
+    fetchSummary(att, agendaItem);
+  }
+}
+
+async function fetchSummary(att, agendaItem) {
+  try {
+    const resp = await fetch('/api/attachment-summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        case_url: agendaItem.case_url,
+        attachment_num: att.num,
+      }),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.summary) {
+      att.summary = data.summary;
+      // Update in state too
+      const atts = state.attachments[agendaItem.case_url] || [];
+      const stateAtt = atts.find(a => a.num === att.num);
+      if (stateAtt) stateAtt.summary = data.summary;
+      // Update modal if still showing this attachment
+      const loadingEl = document.getElementById('modal-summary-loading');
+      if (loadingEl) {
+        loadingEl.outerHTML = `<div class="modal-summary">${renderMarkdown(data.summary)}</div>`;
+      }
+    } else {
+      const loadingEl = document.getElementById('modal-summary-loading');
+      if (loadingEl) {
+        loadingEl.innerHTML = 'Tiivistelmää ei saatavilla.';
+      }
+    }
+  } catch (e) {
+    const loadingEl = document.getElementById('modal-summary-loading');
+    if (loadingEl) {
+      loadingEl.innerHTML = 'Virhe ladattaessa tiivistelmää.';
+    }
+  }
+}
+
+async function processAttachment() {
+  const modal = document.getElementById('attachmentModal');
+  const att = modal._currentAtt;
+  const agendaItem = modal._currentAgendaItem;
+  if (!att || !agendaItem) return;
+
+  const btn = modal.querySelector('.modal-process-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Käsitellään...';
+  }
+
+  try {
+    const resp = await fetch('/api/process-attachment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        case_url: agendaItem.case_url,
+        attachment_num: att.num,
+      }),
+    });
+    const result = await resp.json();
+    if (resp.ok) {
+      // Use the summary returned directly from processing
+      const updatedAtt = { ...att, cached: true };
+      if (result.summary) {
+        updatedAtt.summary = result.summary;
+      }
+      if (result.pages != null) updatedAtt.pages = result.pages;
+      if (result.tokens != null) updatedAtt.tokens = result.tokens;
+      if (result.category) updatedAtt.category = result.category;
+
+      // Invalidate + refresh attachment list
+      const caseUrl = agendaItem.case_url;
+      delete state.attachments[caseUrl];
+      const refreshResp = await fetch(`/api/attachments?case_url=${encodeURIComponent(caseUrl)}`);
+      const refreshData = await refreshResp.json();
+      state.attachments[caseUrl] = refreshData.attachments || [];
+
+      // Merge summary into the refreshed data (cache-check doesn't return text)
+      if (result.summary) {
+        const refreshedAtt = state.attachments[caseUrl].find(a => a.num === att.num);
+        if (refreshedAtt) refreshedAtt.summary = result.summary;
+      }
+
+      // Re-open modal with updated data
+      const finalAtt = state.attachments[caseUrl].find(a => a.num === att.num) || updatedAtt;
+      if (!finalAtt.summary && result.summary) finalAtt.summary = result.summary;
+      openAttachmentModal(finalAtt, agendaItem);
+
+      // Also refresh the attachment list in the right pane
+      const agendaIdx = state.agenda.indexOf(agendaItem);
+      if (agendaIdx >= 0) {
+        const attContainer = document.getElementById(`att-${agendaIdx}`);
+        if (attContainer) {
+          attContainer.innerHTML = renderAttachments(agendaIdx, state.attachments[caseUrl]);
+        }
+      }
+    } else {
+      if (btn) {
+        btn.textContent = 'Virhe - yritä uudelleen';
+        btn.disabled = false;
+      }
+    }
+  } catch (e) {
+    if (btn) {
+      btn.textContent = 'Virhe - yritä uudelleen';
+      btn.disabled = false;
+    }
+  }
+}
+
+function closeModal() {
+  document.getElementById('attachmentModal').classList.remove('open');
+}
+
+// Close modal on overlay click or Escape
+document.getElementById('attachmentModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeModal();
+});
+
+function getSelectionContext() {
+  // Returns context about what's selected in the right pane for chat messages
+  if (state.selectedAttachment !== null && state.selectedAgendaItem !== null) {
+    const item = state.agenda[state.selectedAgendaItem];
+    const atts = state.attachments[item?.case_url] || [];
+    const att = atts[state.selectedAttachment];
+    if (att && item) {
+      return {
+        type: 'attachment',
+        agenda_item: item.title,
+        case_url: item.case_url,
+        attachment_num: att.num,
+        attachment_name: att.name,
+      };
+    }
+  }
+  if (state.selectedAgendaItem !== null) {
+    const item = state.agenda[state.selectedAgendaItem];
+    if (item) {
+      return {
+        type: 'agenda_item',
+        agenda_item: item.title,
+        case_url: item.case_url,
+      };
+    }
+  }
+  return null;
+}
+
+// --- Chat ---
+function renderThread(key) {
+  const container = document.getElementById('chatMessages');
+  const thread = state.threads[key] || [];
+
+  if (!thread.length) {
+    container.innerHTML = `
+      <div class="chat-empty">
+        <h3>Aloita keskustelu</h3>
+        <p>Kysy kokouksesta, esim. "Listaa agendan kohdat" tai "Mitä päätettiin?"</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = thread.map(msg => `
+    <div class="message ${msg.role}">${msg.role === 'assistant' ? renderMarkdown(msg.content) : escapeHtml(msg.content)}</div>
+  `).join('');
+
+  container.scrollTop = container.scrollHeight;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function renderMarkdown(text) {
+  // Escape HTML first
+  let html = escapeHtml(text);
+  // Bold: **text**
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Italic: *text* (but not inside bold)
+  html = html.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+  // Split into lines for block-level formatting
+  const lines = html.split('\n');
+  let result = '';
+  let inList = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const bullet = line.match(/^(\s*)[-] (.+)/);
+    const numbered = line.match(/^(\s*)(\d+)[.)]\s+(.+)/);
+    if (bullet) {
+      if (!inList) { result += '<ul>'; inList = 'ul'; }
+      result += `<li>${bullet[2]}</li>`;
+    } else if (numbered) {
+      if (!inList) { result += '<ol>'; inList = 'ol'; }
+      result += `<li>${numbered[3]}</li>`;
+    } else {
+      if (inList) { result += inList === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+      if (line.trim() === '') {
+        result += '<br>';
+      } else {
+        result += line + '\n';
+      }
+    }
+  }
+  if (inList) { result += inList === 'ul' ? '</ul>' : '</ol>'; }
+  return result;
+}
+
+async function sendMessage() {
+  if (state.sending || !state.selectedMeeting) return;
+
+  const input = document.getElementById('chatInput');
+  const message = input.value.trim();
+  if (!message) return;
+
+  const key = state.selectedMeeting.key;
+  if (!state.threads[key]) state.threads[key] = [];
+
+  // Add user message
+  state.threads[key].push({ role: 'user', content: message });
+  input.value = '';
+  input.style.height = '44px';
+  renderThread(key);
+
+  // Show status indicator with elapsed timer
+  state.sending = true;
+  updateSendButton();
+  const container = document.getElementById('chatMessages');
+  const statusEl = document.createElement('div');
+  statusEl.className = 'message assistant status-msg';
+  statusEl.textContent = 'Lähetetään...';
+  container.appendChild(statusEl);
+  container.scrollTop = container.scrollHeight;
+
+  let statusBase = 'Lähetetään...';
+  const timerStart = Date.now();
+  const timerInterval = setInterval(() => {
+    const elapsed = Math.round((Date.now() - timerStart) / 1000);
+    if (elapsed > 2) {
+      statusEl.textContent = `${statusBase} (${elapsed}s)`;
+    }
+  }, 1000);
+
+  // Find meeting context
+  const meetings = state.meetings[state.selectedMeeting.date] || [];
+  const meeting = meetings.find(m => m.policymaker === state.selectedMeeting.policymaker) || {};
+  const selectionContext = getSelectionContext();
+
+  let assistantText = '';
+
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        meeting_key: key,
+        meeting_context: {
+          date: state.selectedMeeting.date,
+          policymaker: state.selectedMeeting.policymaker,
+          policymaker_name: meeting.policymaker_name || '',
+        },
+        selection_context: selectionContext,
+        agenda_items: state.agenda.length ? state.agenda : undefined,
+      }),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let responseStarted = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6);
+        let event;
+        try { event = JSON.parse(raw); } catch { continue; }
+
+        if (event.type === 'status') {
+          statusBase = event.text;
+          statusEl.textContent = statusBase;
+          container.scrollTop = container.scrollHeight;
+        } else if (event.type === 'delta') {
+          if (!responseStarted) {
+            responseStarted = true;
+            clearInterval(timerInterval);
+            statusEl.remove();
+            const msgEl = document.createElement('div');
+            msgEl.className = 'message assistant';
+            msgEl.id = 'streaming-msg';
+            container.appendChild(msgEl);
+          }
+          assistantText += event.text;
+          document.getElementById('streaming-msg').innerHTML = renderMarkdown(assistantText);
+          container.scrollTop = container.scrollHeight;
+        } else if (event.type === 'error') {
+          clearInterval(timerInterval);
+          statusEl.textContent = `Virhe: ${event.text}`;
+          statusEl.classList.add('error');
+        } else if (event.type === 'done') {
+          clearInterval(timerInterval);
+          const el = document.getElementById('streaming-msg');
+          if (el) el.removeAttribute('id');
+        }
+      }
+    }
+
+    if (!responseStarted) {
+      clearInterval(timerInterval);
+      statusEl.remove();
+    }
+
+    if (assistantText) {
+      state.threads[key].push({ role: 'assistant', content: assistantText });
+    } else {
+      state.threads[key].push({ role: 'assistant', content: '[Ei vastausta]' });
+    }
+  } catch (e) {
+    clearInterval(timerInterval);
+    statusEl.textContent = `Yhteysvirhe: ${e.message}`;
+    statusEl.classList.add('error');
+    state.threads[key].push({ role: 'assistant', content: `[Yhteysvirhe: ${e.message}]` });
+  }
+
+  state.sending = false;
+  updateSendButton();
+}
+
+function updateSendButton() {
+  const btn = document.getElementById('chatSend');
+  btn.disabled = state.sending || !state.selectedMeeting;
+}
+
+// --- Input handling ---
+const inputEl = document.getElementById('chatInput');
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = '44px';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+});
+
+document.getElementById('chatSend').addEventListener('click', sendMessage);
+
+// --- Pane toggle ---
+function togglePane(side) {
+  document.getElementById('app').classList.toggle(side + '-collapsed');
+}
+
+// --- Init ---
+loadMeetings();
+</script>
+</body>
+</html>
