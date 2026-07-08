@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# SQLite cache (local, regenerated on use)
+ui/cache.db
+ui/cache.db-shm
+ui/cache.db-wal
+
+# Azure
+.azure/
+
+# Secrets / credentials
+conn.json
+.env
+**/.env
+
+# Output from scripts
+output/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+*.swp
