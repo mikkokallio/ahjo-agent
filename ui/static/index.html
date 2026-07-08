@@ -1306,9 +1306,18 @@ function renderMarkdown(text) {
   let inList = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const heading = line.match(/^(#{1,6})\s+(.+)/);
+    const hr = line.match(/^---+\s*$/);
     const bullet = line.match(/^(\s*)[-] (.+)/);
     const numbered = line.match(/^(\s*)(\d+)[.)]\s+(.+)/);
-    if (bullet) {
+    if (heading) {
+      if (inList) { result += inList === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+      const level = heading[1].length;
+      result += `<h${level}>${heading[2]}</h${level}>`;
+    } else if (hr) {
+      if (inList) { result += inList === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+      result += '<hr>';
+    } else if (bullet) {
       if (!inList) { result += '<ul>'; inList = 'ul'; }
       result += `<li>${bullet[2]}</li>`;
     } else if (numbered) {
