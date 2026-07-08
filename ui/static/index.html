@@ -1045,7 +1045,14 @@ function openAttachmentModal(att, agendaItem) {
     metaHtml += `<dt>Sivuja</dt><dd>${att.pages}</dd>`;
   }
   if (att.tokens != null && att.tokens > 0) {
-    metaHtml += `<dt>Tokeneita</dt><dd>${att.tokens.toLocaleString('fi')}</dd>`;
+    if (att.category === 'summarized' && att.summary) {
+      const summaryTokens = Math.round(att.summary.split(/\s+/).length * 1.3);
+      metaHtml += `<dt>Tokeneita</dt><dd id="modal-token-info">${summaryTokens.toLocaleString('fi')} / ${att.tokens.toLocaleString('fi')}</dd>`;
+    } else if (att.category === 'full') {
+      metaHtml += `<dt>Tokeneita</dt><dd id="modal-token-info">${att.tokens.toLocaleString('fi')} (koko teksti)</dd>`;
+    } else {
+      metaHtml += `<dt>Tokeneita</dt><dd id="modal-token-info">${att.tokens.toLocaleString('fi')}</dd>`;
+    }
   }
   if (att.category) {
     metaHtml += `<dt>Kategoria</dt><dd>${escapeHtml(att.category)}</dd>`;
@@ -1106,14 +1113,30 @@ async function fetchSummary(att, agendaItem) {
     const data = await resp.json();
     if (resp.ok && data.summary) {
       att.summary = data.summary;
+      if (data.category) att.category = data.category;
+      if (data.tokens != null) att.tokens = data.tokens;
       // Update in state too
       const atts = state.attachments[agendaItem.case_url] || [];
       const stateAtt = atts.find(a => a.num === att.num);
-      if (stateAtt) stateAtt.summary = data.summary;
+      if (stateAtt) {
+        stateAtt.summary = data.summary;
+        if (data.category) stateAtt.category = data.category;
+        if (data.tokens != null) stateAtt.tokens = data.tokens;
+      }
       // Update modal if still showing this attachment
       const loadingEl = document.getElementById('modal-summary-loading');
       if (loadingEl) {
         loadingEl.outerHTML = `<div class="modal-summary">${renderMarkdown(data.summary)}</div>`;
+      }
+      // Update token display with summary/original info
+      const tokenEl = document.getElementById('modal-token-info');
+      if (tokenEl && att.tokens > 0) {
+        if (att.category === 'summarized') {
+          const summaryTokens = Math.round(att.summary.split(/\s+/).length * 1.3);
+          tokenEl.textContent = `${summaryTokens.toLocaleString('fi')} / ${att.tokens.toLocaleString('fi')}`;
+        } else if (att.category === 'full') {
+          tokenEl.textContent = `${att.tokens.toLocaleString('fi')} (koko teksti)`;
+        }
       }
     } else {
       const loadingEl = document.getElementById('modal-summary-loading');
