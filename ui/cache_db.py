@@ -15,6 +15,7 @@ _local = threading.local()
 # In-memory caches (loaded from SQLite at startup)
 _agenda_mem: dict[str, list] = {}
 _attachments_mem: dict[str, list] = {}
+_summaries_mem: dict[str, dict] = {}  # key: "case_url::att_num"
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -40,6 +41,12 @@ def _init_db(conn: sqlite3.Connection):
             attachments_json TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS summaries_cache (
+            cache_key TEXT PRIMARY KEY,
+            summary_json TEXT NOT NULL
+        )
+    """)
     conn.commit()
 
 
@@ -50,6 +57,8 @@ def _load_from_disk():
         _agenda_mem[row[0]] = json.loads(row[1])
     for row in conn.execute("SELECT case_url, attachments_json FROM attachments_cache"):
         _attachments_mem[row[0]] = json.loads(row[1])
+    for row in conn.execute("SELECT cache_key, summary_json FROM summaries_cache"):
+        _summaries_mem[row[0]] = json.loads(row[1])
 
 
 # Load on import
@@ -88,4 +97,20 @@ def invalidate_attachments(case_url: str):
     _attachments_mem.pop(case_url, None)
     conn = _get_conn()
     conn.execute("DELETE FROM attachments_cache WHERE case_url = ?", (case_url,))
+    conn.commit()
+
+
+def get_summary(case_url: str, attachment_num: int) -> dict | None:
+    key = f"{case_url}::{attachment_num}"
+    return _summaries_mem.get(key)
+
+
+def put_summary(case_url: str, attachment_num: int, summary_data: dict):
+    key = f"{case_url}::{attachment_num}"
+    _summaries_mem[key] = summary_data
+    conn = _get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO summaries_cache (cache_key, summary_json) VALUES (?, ?)",
+        (key, json.dumps(summary_data, ensure_ascii=False)),
+    )
     conn.commit()
