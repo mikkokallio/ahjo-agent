@@ -18,6 +18,8 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 import azure.functions as func
 import httpx
 import pdfplumber
+from azure.ai.contentunderstanding import ContentUnderstandingClient
+from azure.ai.contentunderstanding.models import AnalysisInput
 from azure.identity import ManagedIdentityCredential, get_bearer_token_provider
 from azure.storage.blob import BlobServiceClient
 from bs4 import BeautifulSoup
@@ -29,6 +31,7 @@ BLOB_ACCOUNT_URL = "https://stpdfprocahjo.blob.core.windows.net"
 BLOB_CONTAINER_CACHE = "pdf-cache"
 BLOB_CONTAINER_JOBS = "jobs"
 AI_ENDPOINT = "https://ai-account-mapx4sxw6thvg.services.ai.azure.com"
+CONTENT_UNDERSTANDING_ENDPOINT = "https://ai-account-mapx4sxw6thvg.cognitiveservices.azure.com"
 
 _credential = None
 _blob_service = None
@@ -48,6 +51,40 @@ def _get_blob_service():
     if _blob_service is None:
         _blob_service = BlobServiceClient(account_url=BLOB_ACCOUNT_URL, credential=_get_credential())
     return _blob_service
+
+
+_cu_client = None
+
+
+def _get_cu_client():
+    """Get (or create) the Content Understanding client."""
+    global _cu_client
+    if _cu_client is None:
+        _cu_client = ContentUnderstandingClient(
+            endpoint=CONTENT_UNDERSTANDING_ENDPOINT,
+            credential=_get_credential(),
+        )
+    return _cu_client
+
+
+def _ocr_via_content_understanding(pdf_url: str, name: str) -> str | None:
+    """Extract text from a PDF using Azure AI Content Understanding (OCR).
+    Returns extracted text or None on failure."""
+    try:
+        client = _get_cu_client()
+        poller = client.begin_analyze(
+            analyzer_id="prebuilt-read",
+            inputs=[AnalysisInput(url=pdf_url)],
+        )
+        result = poller.result()
+        if result.contents and len(result.contents) > 0:
+            text = result.contents[0].markdown or ""
+            logging.info(f"Content Understanding OCR: {name} -> {len(text)} chars")
+            return text.strip() if text.strip() else None
+        return None
+    except Exception as e:
+        logging.error(f"Content Understanding OCR failed for {name}: {e}")
+        return None
 
 
 def _blob_write(container: str, blob_name: str, data: str):
@@ -181,58 +218,75 @@ def _process_single_pdf(att: dict, token_provider) -> dict:
         logging.error(f"Download failed: {att['name']}: {e}")
         return {"num": att["num"], "name": att["name"], "text": f"[Download failed: {e}]", "tokens": 0}
 
-    # Skip very large files (>20MB) - likely image-heavy maps that will hang pdfplumber
+    # Very large files (>20MB) - skip pdfplumber (hangs), try Content Understanding OCR directly
     pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
+    full_text = None
+    page_count = 0
+
     if pdf_size_mb > 20:
-        logging.warning(f"Skipping extraction for {att['name']}: {pdf_size_mb:.1f}MB exceeds 20MB limit")
-        result = {"num": att["num"], "name": att["name"], "text": f"[Document too large for text extraction ({pdf_size_mb:.1f}MB) - likely image/map content]", "tokens": 0, "pages": 0, "category": "skipped"}
-        try:
-            _blob_write(BLOB_CONTAINER_CACHE, cache_key, json.dumps(result, ensure_ascii=False))
-        except Exception:
-            pass
-        del pdf_bytes
-        return result
-
-    # Extract text with timeout protection for image-heavy PDFs
-    try:
-        def _extract_text(data: bytes) -> tuple[list[str], int]:
-            parts = []
-            with pdfplumber.open(io.BytesIO(data)) as pdf:
-                pages = len(pdf.pages)
-                for page in pdf.pages:
-                    try:
-                        page_text = page.extract_text()
-                        if page_text:
-                            parts.append(page_text)
-                    except Exception:
-                        pass
-            return parts, pages
-
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_extract_text, pdf_bytes)
-            try:
-                text_parts, page_count = future.result(timeout=60)
-            except FuturesTimeoutError:
-                logging.warning(f"PDF extraction timed out for {att['name']} ({pdf_size_mb:.1f}MB)")
-                result = {"num": att["num"], "name": att["name"], "text": "[PDF extraction timed out - document too complex for text extraction]", "tokens": 0, "pages": 0, "category": "skipped"}
-                try:
-                    _blob_write(BLOB_CONTAINER_CACHE, cache_key, json.dumps(result, ensure_ascii=False))
-                except Exception:
-                    pass
-                del pdf_bytes
-                return result
-        full_text = "\n\n".join(text_parts)
-        del pdf_bytes
-        if not full_text.strip():
-            result = {"num": att["num"], "name": att["name"], "text": "[Not machine-readable - possibly scanned/image document]", "tokens": 0, "pages": page_count, "category": "skipped"}
-            # Cache the "not readable" result so we don't re-download next time
+        logging.info(f"Large PDF ({pdf_size_mb:.1f}MB), using Content Understanding OCR: {att['name']}")
+        del pdf_bytes  # Free memory before OCR call
+        ocr_text = _ocr_via_content_understanding(att["pdf_url"], att["name"])
+        if ocr_text:
+            full_text = ocr_text
+        else:
+            result = {"num": att["num"], "name": att["name"], "text": f"[Document too large ({pdf_size_mb:.1f}MB) and OCR returned no text - likely image/map content]", "tokens": 0, "pages": 0, "category": "skipped"}
             try:
                 _blob_write(BLOB_CONTAINER_CACHE, cache_key, json.dumps(result, ensure_ascii=False))
             except Exception:
                 pass
             return result
-    except Exception as e:
-        return {"num": att["num"], "name": att["name"], "text": f"[PDF extraction failed: {e}]", "tokens": 0, "pages": 0, "category": "error"}
+    else:
+        # Extract text with timeout protection for image-heavy PDFs
+        try:
+            def _extract_text(data: bytes) -> tuple[list[str], int]:
+                parts = []
+                with pdfplumber.open(io.BytesIO(data)) as pdf:
+                    pages = len(pdf.pages)
+                    for page in pdf.pages:
+                        try:
+                            page_text = page.extract_text()
+                            if page_text:
+                                parts.append(page_text)
+                        except Exception:
+                            pass
+                return parts, pages
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_extract_text, pdf_bytes)
+                try:
+                    text_parts, page_count = future.result(timeout=60)
+                except FuturesTimeoutError:
+                    logging.warning(f"PDF extraction timed out for {att['name']} ({pdf_size_mb:.1f}MB), trying Content Understanding OCR")
+                    del pdf_bytes
+                    ocr_text = _ocr_via_content_understanding(att["pdf_url"], att["name"])
+                    if ocr_text:
+                        full_text = ocr_text
+                    else:
+                        result = {"num": att["num"], "name": att["name"], "text": "[PDF extraction timed out and OCR returned no text]", "tokens": 0, "pages": 0, "category": "skipped"}
+                        try:
+                            _blob_write(BLOB_CONTAINER_CACHE, cache_key, json.dumps(result, ensure_ascii=False))
+                        except Exception:
+                            pass
+                        return result
+            if full_text is None:
+                full_text = "\n\n".join(text_parts)
+                del pdf_bytes
+                if not full_text.strip():
+                    # pdfplumber found no text - try Content Understanding OCR (handles scanned/image PDFs)
+                    logging.info(f"pdfplumber empty, trying Content Understanding OCR: {att['name']}")
+                    ocr_text = _ocr_via_content_understanding(att["pdf_url"], att["name"])
+                    if ocr_text:
+                        full_text = ocr_text
+                    else:
+                        result = {"num": att["num"], "name": att["name"], "text": "[Not machine-readable - possibly scanned/image document]", "tokens": 0, "pages": page_count, "category": "skipped"}
+                        try:
+                            _blob_write(BLOB_CONTAINER_CACHE, cache_key, json.dumps(result, ensure_ascii=False))
+                        except Exception:
+                            pass
+                        return result
+        except Exception as e:
+            return {"num": att["num"], "name": att["name"], "text": f"[PDF extraction failed: {e}]", "tokens": 0, "pages": 0, "category": "error"}
 
     token_est = int(len(full_text.split()) * 1.3)
 
