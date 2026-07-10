@@ -82,10 +82,20 @@ async def index():
 
 
 @app.get("/api/meetings")
-async def get_meetings(days_back: int = 30, days_ahead: int = 14):
-    """Fetch meetings from Ahjo API, grouped by date."""
-    from_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    target_date = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+async def get_meetings(year: int = 0, month: int = 0, days_back: int = 30, days_ahead: int = 14):
+    """Fetch meetings from Ahjo API, grouped by date.
+
+    If year and month are provided, returns meetings for that specific month.
+    Otherwise falls back to days_back/days_ahead relative to today.
+    """
+    if year and month:
+        import calendar
+        from_date = f"{year}-{month:02d}-01"
+        last_day = calendar.monthrange(year, month)[1]
+        target_date = f"{year}-{month:02d}-{last_day:02d}"
+    else:
+        from_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        target_date = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{BASE_URL}/fi/ahjo_api/meetings", params={"from": from_date})
@@ -475,9 +485,9 @@ async def get_attachments_bulk(request: Request):
         if cached is not None:
             results[url] = cached
 
-    # Kick off background prefetch of summaries from blob
+    # Kick off background prefetch of summaries
     if results:
-        asyncio.create_task(_prefetch_summaries_from_blob(results))
+        asyncio.create_task(_prefetch_summaries(results))
 
     return JSONResponse({"results": results})
 
@@ -534,35 +544,26 @@ async def _scrape_attachments(case_url: str) -> list:
                         attachments.append({"num": num, "name": name, "pdf_url": "", "published": False})
             break
 
-    # Check cache status directly from blob (no Azure Function dependency)
+    # Check cache status via the PDF processor HTTP endpoint
     if attachments:
         try:
-            token = await _get_storage_token()
-            client = _get_blob_client()
-            sem = asyncio.Semaphore(6)
-
-            async def check_one(att):
-                if not att.get("pdf_url"):
-                    return
-                async with sem:
-                    blob_key = _pdf_cache_key(att["pdf_url"])
-                    try:
-                        resp = await client.get(
-                            f"/{BLOB_CONTAINER_CACHE}/{blob_key}",
-                            headers={"Authorization": f"Bearer {token}", "x-ms-version": "2023-11-03"},
-                        )
-                        if resp.status_code == 200:
-                            blob_data = json.loads(resp.text)
+            cache_url = f"{PDF_PROCESSOR_URL}/api/cache-check"
+            if PDF_PROCESSOR_KEY:
+                cache_url += f"?code={PDF_PROCESSOR_KEY}"
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(cache_url, json={"case_url": case_url})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    cache_map = {a["num"]: a for a in data.get("attachments", [])}
+                    for att in attachments:
+                        cached_att = cache_map.get(att.get("num"))
+                        if cached_att and cached_att.get("cached"):
                             att["cached"] = True
-                            att["pages"] = blob_data.get("pages")
-                            att["tokens"] = blob_data.get("tokens")
-                            att["category"] = blob_data.get("category")
-                        else:
+                            att["pages"] = cached_att.get("pages")
+                            att["tokens"] = cached_att.get("tokens")
+                            att["category"] = cached_att.get("category")
+                        elif att.get("published"):
                             att["cached"] = False
-                    except Exception:
-                        att["cached"] = False
-
-            await asyncio.gather(*[check_one(att) for att in attachments if att.get("published")])
         except Exception:
             pass  # Cache check is best-effort
 
@@ -621,125 +622,98 @@ async def process_attachment(request: Request):
         return JSONResponse({"error": str(e)}, status_code=502)
 
 
-BLOB_ACCOUNT_URL = "https://stpdfprocahjo.blob.core.windows.net"
-BLOB_CONTAINER_CACHE = "pdf-cache"
 
-_cached_storage_token = None
-_storage_token_expires_at = 0
-_blob_client: httpx.AsyncClient | None = None
-
-
-def _get_storage_token_sync() -> str:
-    """Acquire storage-scoped token with caching."""
-    global _cached_storage_token, _storage_token_expires_at
-    now = time.time()
-    if _cached_storage_token and now < _storage_token_expires_at - 300:
-        return _cached_storage_token
-    cred = _get_credential()
-    token = cred.get_token("https://storage.azure.com/.default")
-    _cached_storage_token = token.token
-    _storage_token_expires_at = token.expires_on
-    return _cached_storage_token
-
-
-async def _get_storage_token() -> str:
-    return await asyncio.to_thread(_get_storage_token_sync)
-
-
-def _get_blob_client() -> httpx.AsyncClient:
-    """Persistent async client for blob storage (reuses TCP/TLS connection)."""
-    global _blob_client
-    if _blob_client is None:
-        _blob_client = httpx.AsyncClient(
-            base_url=BLOB_ACCOUNT_URL,
-            timeout=30,
-            http2=True,
-        )
-    return _blob_client
-
-
-def _pdf_cache_key(pdf_url: str) -> str:
-    import hashlib
-    return hashlib.sha256(pdf_url.encode()).hexdigest()[:16]
-
-
-async def _read_blob_summary(pdf_url: str) -> dict | None:
-    """Read summary directly from blob storage (bypasses Azure Function)."""
-    blob_key = _pdf_cache_key(pdf_url)
-    token = await _get_storage_token()
+async def _read_blob_summary(case_url: str, attachment_num: int) -> dict | None:
+    """Read a cached summary via the PDF processor HTTP endpoint."""
+    process_url = f"{PDF_PROCESSOR_URL}/api/process"
+    if PDF_PROCESSOR_KEY:
+        process_url += f"?code={PDF_PROCESSOR_KEY}"
     try:
-        client = _get_blob_client()
-        resp = await client.get(
-            f"/{BLOB_CONTAINER_CACHE}/{blob_key}",
-            headers={"Authorization": f"Bearer {token}", "x-ms-version": "2023-11-03"},
-        )
-        if resp.status_code == 200:
-            return json.loads(resp.text)
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(process_url, json={
+                "case_url": case_url,
+                "attachment_numbers": str(attachment_num),
+            })
+            if resp.status_code != 200:
+                return None
+            result = resp.json()
+            job_id = result.get("job_id")
+            if not job_id:
+                return None
+            status_url = f"{PDF_PROCESSOR_URL}/api/status/{job_id}"
+            if PDF_PROCESSOR_KEY:
+                status_url += f"?code={PDF_PROCESSOR_KEY}"
+            status_resp = await client.get(status_url)
+            if status_resp.status_code == 200:
+                for att_result in status_resp.json().get("results", []):
+                    if att_result.get("num") == attachment_num:
+                        return att_result
     except Exception as e:
-        logger.warning(f"Direct blob read failed for {blob_key}: {e}")
+        logger.warning(f"PDF processor summary fetch failed: {e}")
     return None
 
 
-async def _prefetch_summaries_from_blob(results: dict):
-    """Background task: pull all blob-cached summaries into local cache."""
-    try:
-        token = await _get_storage_token()
-    except Exception:
-        return
-
-    to_fetch = []  # (case_url, att_num, pdf_url)
+async def _prefetch_summaries(results: dict):
+    """Background task: pull all cached summaries into local cache via PDF processor."""
+    to_fetch = []  # (case_url, att_num)
     for case_url, attachments in results.items():
         for att in attachments:
-            if att.get("pdf_url"):
-                # Skip if already in local summary cache
+            if att.get("pdf_url") and att.get("cached"):
                 if db_get_summary(case_url, att["num"]) is None:
-                    to_fetch.append((case_url, att["num"], att["pdf_url"]))
+                    to_fetch.append((case_url, att["num"]))
 
     if not to_fetch:
         return
 
-    logger.info(f"Prefetching {len(to_fetch)} summaries from blob...")
-    client = _get_blob_client()
-    sem = asyncio.Semaphore(6)
+    logger.info(f"Prefetching {len(to_fetch)} summaries via PDF processor...")
 
-    async def fetch_one(case_url, att_num, pdf_url):
-        async with sem:
-            blob_key = _pdf_cache_key(pdf_url)
-            try:
-                resp = await client.get(
-                    f"/{BLOB_CONTAINER_CACHE}/{blob_key}",
-                    headers={"Authorization": f"Bearer {token}", "x-ms-version": "2023-11-03"},
-                )
-                if resp.status_code == 200:
-                    blob_data = json.loads(resp.text)
-                    summary_data = {
-                        "summary": blob_data.get("text", ""),
-                        "pages": blob_data.get("pages"),
-                        "tokens": blob_data.get("tokens"),
-                        "category": blob_data.get("category"),
-                    }
-                    db_put_summary(case_url, att_num, summary_data)
-                    # Fix stale attachment metadata
-                    atts = db_get_attachments(case_url)
-                    if atts:
-                        for a in atts:
-                            if a.get("num") == att_num and not a.get("cached"):
-                                a["cached"] = True
-                                a["pages"] = blob_data.get("pages")
-                                a["tokens"] = blob_data.get("tokens")
-                                a["category"] = blob_data.get("category")
-                                db_put_attachments(case_url, atts)
-                                break
-            except Exception:
-                pass
+    # Group by case_url to batch into single process calls
+    by_case: dict[str, list[int]] = {}
+    for case_url, att_num in to_fetch:
+        by_case.setdefault(case_url, []).append(att_num)
 
-    await asyncio.gather(*[fetch_one(cu, an, pu) for cu, an, pu in to_fetch])
+    async def fetch_case(case_url: str, att_nums: list[int]):
+        process_url = f"{PDF_PROCESSOR_URL}/api/process"
+        if PDF_PROCESSOR_KEY:
+            process_url += f"?code={PDF_PROCESSOR_KEY}"
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(process_url, json={
+                    "case_url": case_url,
+                    "attachment_numbers": ",".join(str(n) for n in att_nums),
+                })
+                if resp.status_code != 200:
+                    return
+                result = resp.json()
+                job_id = result.get("job_id")
+                if not job_id:
+                    return
+                status_url = f"{PDF_PROCESSOR_URL}/api/status/{job_id}"
+                if PDF_PROCESSOR_KEY:
+                    status_url += f"?code={PDF_PROCESSOR_KEY}"
+                status_resp = await client.get(status_url)
+                if status_resp.status_code != 200:
+                    return
+                for att_result in status_resp.json().get("results", []):
+                    num = att_result.get("num")
+                    if num in att_nums:
+                        summary_data = {
+                            "summary": att_result.get("text", ""),
+                            "pages": att_result.get("pages"),
+                            "tokens": att_result.get("tokens"),
+                            "category": att_result.get("category"),
+                        }
+                        db_put_summary(case_url, num, summary_data)
+        except Exception:
+            pass
+
+    await asyncio.gather(*[fetch_case(cu, nums) for cu, nums in by_case.items()])
     logger.info(f"Prefetch complete: {len(to_fetch)} summaries attempted")
 
 
 @app.post("/api/attachment-summary")
 async def attachment_summary(request: Request):
-    """Fetch summary for an attachment. Local cache -> blob direct -> Azure Function."""
+    """Fetch summary for an attachment. Local cache -> PDF processor HTTP -> process."""
     body = await request.json()
     case_url = body.get("case_url", "")
     attachment_num = body.get("attachment_num")
@@ -752,74 +726,30 @@ async def attachment_summary(request: Request):
     if cached is not None:
         return JSONResponse(cached)
 
-    # 2. Try reading directly from blob (works even if local metadata says cached=False)
-    attachments = db_get_attachments(case_url)
-    att_meta = None
-    if attachments:
-        for att in attachments:
-            if att.get("num") == attachment_num:
-                att_meta = att
-                break
+    # 2. Fetch via PDF processor (handles both cached and uncached attachments)
+    blob_data = await _read_blob_summary(case_url, attachment_num)
+    if blob_data:
+        summary_data = {
+            "summary": blob_data.get("text", ""),
+            "pages": blob_data.get("pages"),
+            "tokens": blob_data.get("tokens"),
+            "category": blob_data.get("category"),
+        }
+        db_put_summary(case_url, attachment_num, summary_data)
+        # Fix stale cached=False in attachment metadata
+        attachments = db_get_attachments(case_url)
+        if attachments:
+            for att in attachments:
+                if att.get("num") == attachment_num and not att.get("cached"):
+                    att["cached"] = True
+                    att["pages"] = blob_data.get("pages")
+                    att["tokens"] = blob_data.get("tokens")
+                    att["category"] = blob_data.get("category")
+                    db_put_attachments(case_url, attachments)
+                    break
+        return JSONResponse(summary_data)
 
-    if att_meta and att_meta.get("pdf_url"):
-        blob_data = await _read_blob_summary(att_meta["pdf_url"])
-        if blob_data:
-            summary_data = {
-                "summary": blob_data.get("text", ""),
-                "pages": blob_data.get("pages"),
-                "tokens": blob_data.get("tokens"),
-                "category": blob_data.get("category"),
-            }
-            db_put_summary(case_url, attachment_num, summary_data)
-            # Fix stale cached=False in attachment metadata
-            if not att_meta.get("cached"):
-                att_meta["cached"] = True
-                att_meta["pages"] = blob_data.get("pages")
-                att_meta["tokens"] = blob_data.get("tokens")
-                att_meta["category"] = blob_data.get("category")
-                db_put_attachments(case_url, attachments)
-            return JSONResponse(summary_data)
-
-    # 3. Fall back to Azure Function (slow, cold start possible)
-    process_url = f"{PDF_PROCESSOR_URL}/api/process"
-    if PDF_PROCESSOR_KEY:
-        process_url += f"?code={PDF_PROCESSOR_KEY}"
-
-    payload = {
-        "case_url": case_url,
-        "attachment_numbers": str(attachment_num),
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(process_url, json=payload)
-            if resp.status_code != 200:
-                return JSONResponse({"error": f"Process returned {resp.status_code}"}, status_code=502)
-            result = resp.json()
-            job_id = result.get("job_id")
-            if not job_id:
-                return JSONResponse({"error": "No job_id returned"}, status_code=502)
-
-            status_url = f"{PDF_PROCESSOR_URL}/api/status/{job_id}"
-            if PDF_PROCESSOR_KEY:
-                status_url += f"?code={PDF_PROCESSOR_KEY}"
-            status_resp = await client.get(status_url)
-            if status_resp.status_code != 200:
-                return JSONResponse({"error": "Status fetch failed"}, status_code=502)
-            status_data = status_resp.json()
-            for att_result in status_data.get("results", []):
-                if att_result.get("num") == attachment_num:
-                    summary_data = {
-                        "summary": att_result.get("text", ""),
-                        "pages": att_result.get("pages"),
-                        "tokens": att_result.get("tokens"),
-                        "category": att_result.get("category"),
-                    }
-                    db_put_summary(case_url, attachment_num, summary_data)
-                    return JSONResponse(summary_data)
-            return JSONResponse({"error": "Attachment not found in results"}, status_code=404)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse({"error": "Could not retrieve summary"}, status_code=502)
 
 
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
