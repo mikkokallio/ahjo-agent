@@ -272,14 +272,14 @@ def _process_single_pdf(att: dict, token_provider) -> dict:
             if full_text is None:
                 full_text = "\n\n".join(text_parts)
                 del pdf_bytes
-                if not full_text.strip():
-                    # pdfplumber found no text - try Content Understanding OCR (handles scanned/image PDFs)
-                    logging.info(f"pdfplumber empty, trying Content Understanding OCR: {att['name']}")
+                if len(full_text.strip()) < 200:
+                    # pdfplumber found no/minimal text - try Content Understanding OCR (handles scanned/image PDFs)
+                    logging.info(f"pdfplumber minimal ({len(full_text.strip())} chars), trying Content Understanding OCR: {att['name']}")
                     ocr_text = _ocr_via_content_understanding(att["pdf_url"], att["name"])
-                    if ocr_text:
+                    if ocr_text and len(ocr_text.strip()) >= 200:
                         full_text = ocr_text
                     else:
-                        result = {"num": att["num"], "name": att["name"], "text": "[Not machine-readable - possibly scanned/image document]", "tokens": 0, "pages": page_count, "category": "skipped"}
+                        result = {"num": att["num"], "name": att["name"], "text": "[Minimal text content - map/image document]", "tokens": 0, "pages": page_count, "category": "skipped"}
                         try:
                             _blob_write(BLOB_CONTAINER_CACHE, cache_key, json.dumps(result, ensure_ascii=False))
                         except Exception:
@@ -470,6 +470,31 @@ def status(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps({"error": "Job not found", "job_id": job_id}), status_code=404, mimetype="application/json")
 
     return func.HttpResponse(status_data, mimetype="application/json")
+
+
+@app.route(route="cache-delete", methods=["POST"])
+def cache_delete(req: func.HttpRequest) -> func.HttpResponse:
+    """Delete cached entries for specific PDF URLs so they can be reprocessed."""
+    try:
+        body = req.get_json()
+    except Exception:
+        return func.HttpResponse(json.dumps({"error": "Invalid JSON body"}), status_code=400, mimetype="application/json")
+
+    pdf_urls = body.get("pdf_urls", [])
+    if not pdf_urls:
+        return func.HttpResponse(json.dumps({"error": "pdf_urls array required"}), status_code=400, mimetype="application/json")
+
+    deleted = []
+    for url in pdf_urls:
+        cache_key = _pdf_cache_key(url)
+        try:
+            client = _get_blob_service().get_blob_client(BLOB_CONTAINER_CACHE, cache_key)
+            client.delete_blob()
+            deleted.append(cache_key)
+        except Exception:
+            pass
+
+    return func.HttpResponse(json.dumps({"deleted": len(deleted), "keys": deleted}), mimetype="application/json")
 
 
 @app.route(route="cache-check", methods=["POST"])

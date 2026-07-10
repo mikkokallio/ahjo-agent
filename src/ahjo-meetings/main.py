@@ -14,7 +14,6 @@ from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import ResponsesHostServer
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from azure.storage.blob import BlobServiceClient
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pydantic import Field
@@ -27,11 +26,7 @@ SEARCH_ENDPOINT = "https://search-ahjo-agent.search.windows.net"
 AI_ENDPOINT = "https://ai-account-mapx4sxw6thvg.services.ai.azure.com"
 EMBEDDING_DEPLOYMENT = "embed-v-4-0"
 
-BLOB_ACCOUNT_URL = "https://stpdfprocahjo.blob.core.windows.net"
-BLOB_CONTAINER_CACHE = "pdf-cache"
-
 _credential = None
-_blob_service = None
 
 
 def _get_credential():
@@ -39,56 +34,6 @@ def _get_credential():
     if _credential is None:
         _credential = DefaultAzureCredential()
     return _credential
-
-
-def _get_blob_service():
-    global _blob_service
-    if _blob_service is None:
-        cred = _get_credential()
-        _blob_service = BlobServiceClient(account_url=BLOB_ACCOUNT_URL, credential=cred)
-        # Log identity info for debugging
-        try:
-            token = cred.get_token("https://storage.azure.com/.default")
-            import base64
-            payload = token.token.split(".")[1]
-            payload += "=" * (4 - len(payload) % 4)
-            claims = json.loads(base64.b64decode(payload))
-            print(f"[IDENTITY] Blob auth as: oid={claims.get('oid')}, appid={claims.get('appid')}, sub={claims.get('sub')}", flush=True)
-        except Exception as ex:
-            print(f"[IDENTITY] Could not inspect token: {ex}", flush=True)
-    return _blob_service
-
-
-def _blob_write(container: str, blob_name: str, data: str):
-    """Write text data to a blob. Creates container if it doesn't exist."""
-    try:
-        svc = _get_blob_service()
-        container_client = svc.get_container_client(container)
-        try:
-            container_client.get_container_properties()
-        except Exception:
-            try:
-                container_client.create_container()
-            except Exception:
-                pass
-        blob_client = container_client.get_blob_client(blob_name)
-        blob_client.upload_blob(data.encode("utf-8"), overwrite=True)
-        print(f"[BLOB] Wrote {len(data)} bytes to {container}/{blob_name}", flush=True)
-    except Exception as e:
-        print(f"[BLOB] WRITE FAILED {container}/{blob_name}: {e}", flush=True)
-        raise
-
-
-def _blob_read(container: str, blob_name: str) -> str | None:
-    """Read text data from a blob, or None if not found."""
-    try:
-        client = _get_blob_service().get_blob_client(container, blob_name)
-        data = client.download_blob().readall().decode("utf-8")
-        print(f"[BLOB] Cache HIT {container}/{blob_name} ({len(data)} bytes)", flush=True)
-        return data
-    except Exception as e:
-        print(f"[BLOB] Cache MISS {container}/{blob_name}: {type(e).__name__}: {e}", flush=True)
-        return None
 
 
 @tool(approval_mode="never_require")
@@ -415,14 +360,17 @@ def read_attachment(
             _elapsed = _time.time() - _t0
             print(f"[PDF-PROC] Job {job_id} completed synchronously in {_elapsed:.1f}s", flush=True)
 
-            # If it completed, fetch the full results from blob
+            # If it completed, fetch the full results via the status endpoint
             if result.get("status") == "completed":
-                status_data = _blob_read("jobs", f"{job_id}/status.json")
-                if status_data:
-                    data = json.loads(status_data)
+                status_url = f"{func_url}/api/status/{job_id}"
+                if func_key:
+                    status_url += f"?code={func_key}"
+                status_resp = client.get(status_url, timeout=30)
+                if status_resp.status_code == 200:
+                    data = status_resp.json()
                     results = data.get("results", [])
                     return _format_attachment_results(case_url, results, data.get("total", 0))
-                return f"Processing completed ({result.get('total', 0)} attachments, {result.get('cached', 0)} from cache) but results blob not found. Try get_attachment_results with job_id: {job_id}"
+                return f"Processing completed ({result.get('total', 0)} attachments, {result.get('cached', 0)} from cache) but status retrieval failed (HTTP {status_resp.status_code}). Try get_attachment_results with job_id: {job_id}"
             return f"Job started: {job_id}. Use get_attachment_results to check progress."
 
     except httpx.TimeoutException:
@@ -445,11 +393,26 @@ def get_attachment_results(
     """Check the status of a PDF processing job and retrieve results if complete.
     Returns progress percentage if still processing, or full results if done."""
 
-    status_data = _blob_read("jobs", f"{job_id}/status.json")
-    if not status_data:
-        return f"Job '{job_id}' not found. It may not have started yet or the ID is incorrect."
+    func_url = os.environ.get("PDF_PROCESSOR_URL", "")
+    func_key = os.environ.get("PDF_PROCESSOR_KEY", "")
 
-    data = json.loads(status_data)
+    if not func_url:
+        return "[Configuration error: PDF_PROCESSOR_URL not set.]"
+
+    status_url = f"{func_url}/api/status/{job_id}"
+    if func_key:
+        status_url += f"?code={func_key}"
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(status_url)
+            if resp.status_code == 404:
+                return f"Job '{job_id}' not found. It may not have started yet or the ID is incorrect."
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return f"[Error checking job status: {e}]"
+
     status = data.get("status", "unknown")
     progress = data.get("progress", 0)
     total = data.get("total", 0)
