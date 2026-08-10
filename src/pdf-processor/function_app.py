@@ -27,11 +27,11 @@ from bs4 import BeautifulSoup
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 BASE_URL = "https://paatokset.hel.fi"
-BLOB_ACCOUNT_URL = "https://stpdfprocahjo.blob.core.windows.net"
+BLOB_ACCOUNT_URL = os.environ["PDF_CACHE_ACCOUNT_URL"]
 BLOB_CONTAINER_CACHE = "pdf-cache"
 BLOB_CONTAINER_JOBS = "jobs"
-AI_ENDPOINT = "https://ai-account-mapx4sxw6thvg.services.ai.azure.com"
-CONTENT_UNDERSTANDING_ENDPOINT = "https://ai-account-mapx4sxw6thvg.cognitiveservices.azure.com"
+AI_ENDPOINT = os.environ["AZURE_AI_ENDPOINT"]
+CONTENT_UNDERSTANDING_ENDPOINT = os.environ["AZURE_CONTENT_UNDERSTANDING_ENDPOINT"]
 
 _credential = None
 _blob_service = None
@@ -113,7 +113,14 @@ def _pdf_cache_key(pdf_url: str) -> str:
     return hashlib.sha256(pdf_url.encode()).hexdigest()[:16]
 
 
-def _chunk_text(text: str, max_tokens: int = 3000) -> list:
+MODEL_CONTEXT_TOKENS = 1_050_000
+MODEL_MAX_INPUT_TOKENS = 922_000
+MODEL_MAX_OUTPUT_TOKENS = 128_000
+SUMMARY_CHUNK_TOKENS = 12_000
+SUMMARY_COMPLETION_BUDGETS = (32_768, 65_536)
+
+
+def _chunk_text(text: str, max_tokens: int = SUMMARY_CHUNK_TOKENS) -> list:
     words = text.split()
     words_per_chunk = int(max_tokens / 1.3)
     chunks = []
@@ -124,33 +131,24 @@ def _chunk_text(text: str, max_tokens: int = 3000) -> list:
     return chunks if chunks else [text]
 
 
-# Rate limit config: 450K TPM = ~7500 tokens/sec
-# Each summarization call uses ~4000 tokens (3000 in + 1000 out)
-# Safe throughput: ~1.8 calls/sec, or ~0.55s between calls
-TPM_LIMIT = 450_000
-TOKENS_PER_CALL = 4000  # ~3000 input + ~1000 output
-MAX_CALLS_PER_MINUTE = TPM_LIMIT // TOKENS_PER_CALL  # ~112
-MIN_DELAY_BETWEEN_CALLS = 60.0 / MAX_CALLS_PER_MINUTE  # ~0.53s
-
-
 def _llm_summarize(text: str, doc_name: str, chunk_num: int, total_chunks: int, token_provider) -> str:
     import time as _time
 
     system_prompt = (
         "You are a document summarizer for Helsinki municipal decision-making materials. "
         "Summarize the following document section concisely and accurately. "
-        "Preserve ALL factual claims, numbers, dates, named entities, monetary amounts, and obligations. "
+        "Preserve decision-relevant factual claims, numbers, dates, named entities, monetary amounts, and obligations. "
         "Note any internal contradictions or ambiguities. "
         "Write in the same language as the source material. "
-        "Be concise but do not omit important facts."
+        "Be concise, do not omit important facts, and end with a complete sentence."
     )
     user_prompt = f"Document: {doc_name} (section {chunk_num}/{total_chunks})\n\n{text}"
 
     deployment = os.environ.get("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-5.4")
     max_retries = 4
 
-    for attempt in range(max_retries):
-        try:
+    for completion_budget in SUMMARY_COMPLETION_BUDGETS:
+        for attempt in range(max_retries):
             token = token_provider()
             resp = httpx.post(
                 f"{AI_ENDPOINT}/openai/deployments/{deployment}/chat/completions?api-version=2024-12-01-preview",
@@ -160,28 +158,56 @@ def _llm_summarize(text: str, doc_name: str, chunk_num: int, total_chunks: int, 
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    "max_completion_tokens": 1000,
-                    "temperature": 0.2,
+                    "max_completion_tokens": completion_budget,
+                    "reasoning_effort": "minimal",
                 },
-                timeout=90,
+                timeout=180,
             )
             if resp.status_code == 429:
                 retry_after = int(resp.headers.get("retry-after", 2 ** (attempt + 1)))
                 logging.warning(f"Rate limited on {doc_name} chunk {chunk_num}, waiting {retry_after}s (attempt {attempt+1})")
                 _time.sleep(retry_after)
                 continue
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            if attempt < max_retries - 1 and "429" in str(e):
-                wait = 2 ** (attempt + 1)
-                logging.warning(f"Rate limit error on {doc_name} chunk {chunk_num}, retrying in {wait}s")
-                _time.sleep(wait)
-                continue
-            logging.error(f"LLM summarization failed for {doc_name} section {chunk_num}: {e}")
-            return f"[Summarization failed for section {chunk_num}: {e}]"
 
-    return f"[Summarization failed for section {chunk_num}: max retries exceeded]"
+            resp.raise_for_status()
+            response_data = resp.json()
+            choice = response_data["choices"][0]
+            finish_reason = choice.get("finish_reason")
+            usage = response_data.get("usage", {})
+            completion_details = usage.get("completion_tokens_details", {})
+            logging.info(
+                "Summarized %s chunk %s/%s: finish_reason=%s completion_tokens=%s reasoning_tokens=%s budget=%s",
+                doc_name,
+                chunk_num,
+                total_chunks,
+                finish_reason,
+                usage.get("completion_tokens"),
+                completion_details.get("reasoning_tokens"),
+                completion_budget,
+            )
+
+            if finish_reason == "length":
+                logging.warning(
+                    "Summary hit completion limit for %s chunk %s/%s at %s tokens; retrying with a larger budget",
+                    doc_name,
+                    chunk_num,
+                    total_chunks,
+                    completion_budget,
+                )
+                break
+            if finish_reason != "stop":
+                raise RuntimeError(f"Unexpected summary finish reason: {finish_reason}")
+
+            content = choice.get("message", {}).get("content", "").strip()
+            if not content:
+                raise RuntimeError("Model returned an empty summary")
+            return content
+        else:
+            raise RuntimeError(f"Rate limit retries exhausted for section {chunk_num}")
+
+    raise RuntimeError(
+        f"Summary remained incomplete after {SUMMARY_COMPLETION_BUDGETS[-1]} completion tokens for section {chunk_num}"
+    )
 
 
 def _update_job_status(job_id: str, status: str, progress: int, total: int, results: list | None = None):
@@ -292,12 +318,13 @@ def _process_single_pdf(att: dict, token_provider) -> dict:
 
     # Summarize large docs
     if token_est > LARGE_THRESHOLD:
-        chunks = _chunk_text(full_text, max_tokens=3000)
+        chunks = _chunk_text(full_text)
         logging.info(f"Summarizing {att['name']}: {len(chunks)} chunks, ~{token_est} tokens")
         del full_text
 
         # Parallel chunk summarization (4 concurrent, with rate-limit retries in _llm_summarize)
         summaries = [None] * len(chunks)
+        failed_chunks = []
 
         def summarize_chunk(args):
             idx, chunk = args
@@ -312,7 +339,17 @@ def _process_single_pdf(att: dict, token_provider) -> dict:
                 except Exception as e:
                     idx = futures[future]
                     logging.error(f"Chunk {idx+1}/{len(chunks)} failed for {att['name']}: {e}")
-                    summaries[idx] = f"[Summarization failed for section {idx+1}: {e}]"
+                    failed_chunks.append(idx + 1)
+
+        if failed_chunks:
+            return {
+                "num": att["num"],
+                "name": att["name"],
+                "text": f"[Summarization failed for sections: {', '.join(map(str, failed_chunks))}]",
+                "tokens": token_est,
+                "pages": page_count,
+                "category": "error",
+            }
 
         final_text = "\n\n".join(s for s in summaries if s)
         category = "summarized"
@@ -571,46 +608,3 @@ def cache_check(req: func.HttpRequest) -> func.HttpResponse:
         "uncached": sum(1 for a in all_attachments if a["published"]) - cached_count,
         "attachments": results,
     }, ensure_ascii=False), mimetype="application/json")
-
-    # Test getting a token
-    try:
-        cred = ManagedIdentityCredential(client_id=client_id)
-        token = cred.get_token("https://storage.azure.com/.default")
-        results["token_obtained"] = True
-        results["token_expires_on"] = token.expires_on
-    except Exception as e:
-        results["token_obtained"] = False
-        results["token_error"] = f"{type(e).__name__}: {e}"
-
-    # Test blob access to stahjoagentcache - test actual container operations
-    try:
-        cred2 = ManagedIdentityCredential(client_id=client_id)
-        svc = BlobServiceClient(account_url=BLOB_ACCOUNT_URL, credential=cred2)
-        container_client = svc.get_container_client("jobs")
-        try:
-            container_client.get_container_properties()
-            results["blob_access"] = True
-            results["container_exists"] = True
-        except Exception as ce:
-            if "ContainerNotFound" in str(ce):
-                container_client.create_container()
-                results["blob_access"] = True
-                results["container_created"] = True
-            else:
-                raise
-    except Exception as e:
-        results["blob_access"] = False
-        results["blob_error"] = f"{type(e).__name__}: {e}"
-        results["blob_traceback"] = traceback.format_exc()[-500:]
-
-    # Test blob access to own storage (stpdfprocahjo)
-    try:
-        own_url = f"https://{os.environ.get('AzureWebJobsStorage__accountName', 'stpdfprocahjo')}.blob.core.windows.net"
-        svc2 = BlobServiceClient(account_url=own_url, credential=cred2)
-        props2 = svc2.get_service_properties()
-        results["own_blob_access"] = True
-    except Exception as e:
-        results["own_blob_access"] = False
-        results["own_blob_error"] = f"{type(e).__name__}: {e}"
-
-    return func.HttpResponse(json.dumps(results, default=str), mimetype="application/json")

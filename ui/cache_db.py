@@ -4,11 +4,13 @@ Uses in-memory dicts for reads (instant), SQLite for persistence across restarts
 """
 
 import json
+import os
 import sqlite3
 import threading
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "cache.db"
+DB_PATH = Path(os.environ.get("CACHE_DB_PATH", Path(__file__).parent / "cache.db"))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 _local = threading.local()
 

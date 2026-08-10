@@ -73,6 +73,30 @@
       },
       "existingAppInsightsConnectionName": {
         "value": "${APPLICATIONINSIGHTS_CONNECTION_NAME=}"
+      },
+      "enableUi": {
+        "value": "${ENABLE_UI=false}"
+      },
+      "uiAppName": {
+        "value": "${UI_APP_NAME=}"
+      },
+      "entraTenantId": {
+        "value": "${AZURE_TENANT_ID}"
+      },
+      "entraClientId": {
+        "value": "${UI_ENTRA_CLIENT_ID=}"
+      },
+      "entraClientSecret": {
+        "value": "${UI_ENTRA_CLIENT_SECRET=}"
+      },
+      "agentEndpoint": {
+        "value": "${AGENT_ENDPOINT=}"
+      },
+      "pdfProcessorUrl": {
+        "value": "${PDF_PROCESSOR_URL=}"
+      },
+      "pdfProcessorKey": {
+        "value": "${PDF_PROCESSOR_KEY=}"
       }
     }
 }
