@@ -14,10 +14,10 @@ import httpx
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
 # Configuration
-SEARCH_ENDPOINT = "https://search-ahjo-agent.search.windows.net"
-INDEX_NAME = "strategy-2025-2029"
-AI_ENDPOINT = "https://ai-account-mapx4sxw6thvg.services.ai.azure.com"
-EMBEDDING_DEPLOYMENT = "embed-v-4-0"
+SEARCH_ENDPOINT = os.environ["AZURE_AI_SEARCH_ENDPOINT"]
+INDEX_NAME = os.environ.get("AZURE_AI_SEARCH_INDEX_NAME", "strategy-2025-2029")
+AI_ENDPOINT = os.environ["AZURE_AI_ENDPOINT"]
+EMBEDDING_DEPLOYMENT = os.environ.get("AZURE_AI_EMBEDDING_DEPLOYMENT_NAME", "embed-v-4-0")
 PDF_PATH = os.path.join(os.path.dirname(__file__), "..", "grounding", "Kaupunkistrategia-2025-2029.pdf")
 
 # Chunk settings

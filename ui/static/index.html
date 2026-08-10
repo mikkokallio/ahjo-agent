@@ -330,7 +330,7 @@ html, body {
 .chat-input-wrap {
   display: flex;
   gap: 10px;
-  align-items: flex-end;
+  align-items: center;
 }
 
 .chat-input {
@@ -930,20 +930,32 @@ function selectMeeting(date, policymaker) {
 // --- Right Pane: Agenda & Attachments ---
 async function loadAgenda(meeting) {
   const container = document.getElementById('rightPaneContent');
-  const meetingLink = meeting ? meeting.meeting_link : '';
-
-  if (!meetingLink) {
-    container.innerHTML = '<div class="pane-right-empty">Asialistaa ei ole vielä julkaistu.</div>';
+  if (!meeting) {
+    container.innerHTML = '<div class="pane-right-empty">Valitse kokous.</div>';
     state.agenda = [];
     return;
   }
 
   container.innerHTML = '<div class="spinner-container"><div class="spinner"></div><span>Ladataan asialistaa...</span></div>';
 
+  // Build query params: use meeting_link if available, otherwise try policymaker lookup
+  const params = new URLSearchParams();
+  if (meeting.meeting_link) {
+    params.set('meeting_link', meeting.meeting_link);
+  } else {
+    params.set('policymaker', meeting.policymaker || '');
+    params.set('policymaker_name', meeting.policymaker_name || '');
+    params.set('date', meeting.date || '');
+  }
+
   try {
-    const resp = await fetch(`/api/agenda?meeting_link=${encodeURIComponent(meetingLink)}`);
+    const resp = await fetch(`/api/agenda?${params}`);
     const data = await resp.json();
     state.agenda = data.items || [];
+    if (!state.agenda.length) {
+      container.innerHTML = '<div class="pane-right-empty">Asialistaa ei ole viela julkaistu.</div>';
+      return;
+    }
     state.attachments = {};
     renderAgenda();
     // Pre-fetch all attachments in background

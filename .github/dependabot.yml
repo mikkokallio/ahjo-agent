@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /ui
+    schedule:
+      interval: monthly
+  - package-ecosystem: pip
+    directory: /src/pdf-processor
+    schedule:
+      interval: monthly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

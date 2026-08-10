@@ -22,9 +22,9 @@ from typing_extensions import Annotated
 load_dotenv()
 
 BASE_URL = "https://paatokset.hel.fi"
-SEARCH_ENDPOINT = "https://search-ahjo-agent.search.windows.net"
-AI_ENDPOINT = "https://ai-account-mapx4sxw6thvg.services.ai.azure.com"
-EMBEDDING_DEPLOYMENT = "embed-v-4-0"
+SEARCH_ENDPOINT = os.environ["AZURE_AI_SEARCH_ENDPOINT"]
+AI_ENDPOINT = os.environ["AZURE_AI_ENDPOINT"]
+EMBEDDING_DEPLOYMENT = os.environ.get("AZURE_AI_EMBEDDING_DEPLOYMENT_NAME", "embed-v-4-0")
 
 _credential = None
 
@@ -607,7 +607,7 @@ def main():
         client=client,
         instructions=INSTRUCTIONS,
         tools=[get_meetings, get_meeting_agenda, get_item_attachments, check_attachment_cache, read_attachment, get_attachment_results, search_strategy],
-        default_options={"store": False},
+        default_options={"store": False, "max_tokens": 65_536},
     )
 
     server = ResponsesHostServer(agent)

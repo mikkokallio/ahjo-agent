@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
-from azure.identity import AzureCliCredential
+from azure.identity import DefaultAzureCredential
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -27,10 +27,7 @@ logger = logging.getLogger("ahjo-ui")
 app = FastAPI(title="Ahjo Agent UI")
 
 BASE_URL = "https://paatokset.hel.fi"
-AGENT_ENDPOINT = os.environ.get(
-    "AGENT_ENDPOINT",
-    "https://ai-account-mapx4sxw6thvg.services.ai.azure.com/api/projects/ai-project-ahjo-agent/agents/ahjo-meetings/endpoint/protocols/openai/responses?api-version=v1",
-)
+AGENT_ENDPOINT = os.environ.get("AGENT_ENDPOINT", "")
 
 _credential = None
 _cached_token: str | None = None
@@ -42,7 +39,7 @@ _agent_client: httpx.AsyncClient | None = None
 def _get_credential():
     global _credential
     if _credential is None:
-        _credential = AzureCliCredential(process_timeout=60)
+        _credential = DefaultAzureCredential()
     return _credential
 
 
@@ -406,16 +403,84 @@ async def chat(request: Request):
 
 
 PDF_PROCESSOR_URL = os.environ.get(
-    "PDF_PROCESSOR_URL", "https://func-pdf-processor-ahjo.azurewebsites.net"
+    "PDF_PROCESSOR_URL", ""
 )
-PDF_PROCESSOR_KEY = os.environ.get(
-    "PDF_PROCESSOR_KEY", "REMOVED_FUNCTION_KEY"
-)
+PDF_PROCESSOR_KEY = os.environ.get("PDF_PROCESSOR_KEY", "")
+
+
+def _slugify(name: str) -> str:
+    """Convert a Finnish policymaker name to a URL slug."""
+    import unicodedata
+    slug = name.lower()
+    slug = unicodedata.normalize("NFD", slug)
+    slug = slug.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
+    return slug
+
+
+async def _find_meeting_link(policymaker: str, policymaker_name: str, date: str) -> str:
+    """Try to find a meeting's document page by scraping the policymaker's listing."""
+    slug = _slugify(policymaker_name)
+    listing_url = f"{BASE_URL}/fi/paattajat/{slug}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(listing_url)
+            if resp.status_code != 200:
+                return ""
+    except Exception:
+        return ""
+
+    # Parse date for matching (e.g. "2026-07-30" -> "30.7.2026" or "30.07.2026")
+    try:
+        from datetime import datetime as dt
+        d = dt.strptime(date, "%Y-%m-%d")
+        # Ahjo uses formats like "30.7.2026" or "30.07.2026"
+        date_patterns = [
+            d.strftime("%-d.%-m.%Y"),   # 30.7.2026
+            d.strftime("%d.%m.%Y"),      # 30.07.2026
+            d.strftime("%-d.%m.%Y"),     # 30.07.2026
+            d.strftime("%d.%-m.%Y"),     # 30.7.2026
+        ]
+    except Exception:
+        # Windows doesn't support %-d, use manual stripping
+        parts = date.split("-")
+        if len(parts) == 3:
+            y, m_s, d_s = parts
+            d_int, m_int = int(d_s), int(m_s)
+            date_patterns = [
+                f"{d_int}.{m_int}.{y}",
+                f"{d_s}.{m_s}.{y}",
+                f"{d_int}.{m_s}.{y}",
+                f"{d_s}.{m_int}.{y}",
+            ]
+        else:
+            return ""
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        if "/asiakirjat/" not in href:
+            continue
+        text = a.get_text(strip=True)
+        for pat in date_patterns:
+            if pat in text:
+                return href
+
+    return ""
 
 
 @app.get("/api/agenda")
-async def get_agenda(meeting_link: str):
-    """Fetch and parse agenda items from a meeting page URL."""
+async def get_agenda(meeting_link: str = "", policymaker: str = "", policymaker_name: str = "", date: str = ""):
+    """Fetch and parse agenda items from a meeting page URL.
+
+    If meeting_link is empty but policymaker info is given, tries to find the
+    agenda by scraping the policymaker's document listing page.
+    """
+    # Try to find meeting_link if not provided
+    if not meeting_link and policymaker_name and date:
+        meeting_link = await _find_meeting_link(policymaker, policymaker_name, date)
+
     if not meeting_link:
         return JSONResponse({"items": []})
 

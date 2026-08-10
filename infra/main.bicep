@@ -70,7 +70,7 @@ param aiProjectConnectionsJson string = '[]'
 
 @secure()
 @description('JSON map of connection name to credentials object. Example: {"my-conn":{"key":"secret"}}')
-param aiProjectConnectionCredentialsJson string = '{}'
+param aiProjectConnectionCredentialsJson string
 
 @description('List of resources to create and connect to the AI project')
 param aiProjectDependentResourcesJson string = '[]'
@@ -113,6 +113,32 @@ param existingApplicationInsightsResourceId string = ''
 @description('Optional. Name of an existing Application Insights connection on the Foundry project. If provided, no new App Insights or connection will be created.')
 param existingAppInsightsConnectionName string = ''
 
+@description('Deploy the authenticated App Service UI.')
+param enableUi bool = false
+
+@description('Optional App Service name. A globally unique name is generated when omitted.')
+param uiAppName string = ''
+
+@description('Microsoft Entra tenant ID used by App Service authentication.')
+param entraTenantId string = tenant().tenantId
+
+@description('Microsoft Entra application client ID used by App Service authentication.')
+param entraClientId string = ''
+
+@secure()
+@description('Microsoft Entra application client secret used by App Service authentication.')
+param entraClientSecret string = ''
+
+@description('Foundry hosted agent Responses endpoint.')
+param agentEndpoint string = ''
+
+@description('PDF processor Function App base URL.')
+param pdfProcessorUrl string = ''
+
+@secure()
+@description('PDF processor Function key.')
+param pdfProcessorKey string = ''
+
 // Tags that should be applied to all resources.
 // 
 // Note that 'azd-service-name' tags should be applied separately to service host resources.
@@ -121,6 +147,7 @@ param existingAppInsightsConnectionName string = ''
 var tags = {
   'azd-env-name': environmentName
 }
+var resolvedUiAppName = !empty(uiAppName) ? uiAppName : 'app-ahjo-${uniqueString(subscription().id, environmentName)}'
 
 // Check if resource group exists and create it if it doesn't
 resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' = {
@@ -205,44 +232,62 @@ module acrForExistingProject 'core/host/acr.bicep' = if (shouldCreateAcrForExist
   }
 }
 
+module uiApp 'ui-app.bicep' = if (enableUi) {
+  scope: rg
+  params: {
+    appName: resolvedUiAppName
+    location: location
+    tags: union(tags, { 'azd-service-name': 'ui' })
+    entraTenantId: entraTenantId
+    entraClientId: entraClientId
+    entraClientSecret: entraClientSecret
+    agentEndpoint: agentEndpoint
+    pdfProcessorUrl: pdfProcessorUrl
+    pdfProcessorKey: pdfProcessorKey
+    aiServicesAccountName: aiFoundryResourceName
+  }
+}
+
 // Resources
 output AZURE_RESOURCE_GROUP string = resourceGroupName
-output AZURE_AI_ACCOUNT_ID string = useExistingAiProject ? existingAiProject.outputs.accountId : aiProject.outputs.accountId
-output AZURE_AI_PROJECT_ID string = useExistingAiProject ? existingAiProject.outputs.projectId : aiProject.outputs.projectId
-output AZURE_AI_FOUNDRY_PROJECT_ID string = useExistingAiProject ? existingAiProject.outputs.projectId : aiProject.outputs.projectId
-output AZURE_AI_ACCOUNT_NAME string = useExistingAiProject ? existingAiProject.outputs.aiServicesAccountName : aiProject.outputs.aiServicesAccountName
-output AZURE_AI_PROJECT_NAME string = useExistingAiProject ? existingAiProject.outputs.projectName : aiProject.outputs.projectName
+output AZURE_AI_ACCOUNT_ID string = useExistingAiProject ? existingAiProject!.outputs.accountId : aiProject!.outputs.accountId
+output AZURE_AI_PROJECT_ID string = useExistingAiProject ? existingAiProject!.outputs.projectId : aiProject!.outputs.projectId
+output AZURE_AI_FOUNDRY_PROJECT_ID string = useExistingAiProject ? existingAiProject!.outputs.projectId : aiProject!.outputs.projectId
+output AZURE_AI_ACCOUNT_NAME string = useExistingAiProject ? existingAiProject!.outputs.aiServicesAccountName : aiProject!.outputs.aiServicesAccountName
+output AZURE_AI_PROJECT_NAME string = useExistingAiProject ? existingAiProject!.outputs.projectName : aiProject!.outputs.projectName
+output SERVICE_UI_NAME string = enableUi ? uiApp!.outputs.name : ''
+output UI_URL string = enableUi ? uiApp!.outputs.url : ''
 
 // Endpoints
-output AZURE_AI_PROJECT_ENDPOINT string = useExistingAiProject ? existingAiProject.outputs.AZURE_AI_PROJECT_ENDPOINT : aiProject.outputs.AZURE_AI_PROJECT_ENDPOINT
-output FOUNDRY_PROJECT_ENDPOINT string = useExistingAiProject ? existingAiProject.outputs.FOUNDRY_PROJECT_ENDPOINT : aiProject.outputs.FOUNDRY_PROJECT_ENDPOINT
-output AZURE_OPENAI_ENDPOINT string = useExistingAiProject ? existingAiProject.outputs.AZURE_OPENAI_ENDPOINT : aiProject.outputs.AZURE_OPENAI_ENDPOINT
-output APPLICATIONINSIGHTS_CONNECTION_STRING string = useExistingAiProject ? existingAiProject.outputs.APPLICATIONINSIGHTS_CONNECTION_STRING : aiProject.outputs.APPLICATIONINSIGHTS_CONNECTION_STRING
-output APPLICATIONINSIGHTS_RESOURCE_ID string = useExistingAiProject ? existingAiProject.outputs.APPLICATIONINSIGHTS_RESOURCE_ID : aiProject.outputs.APPLICATIONINSIGHTS_RESOURCE_ID
+output AZURE_AI_PROJECT_ENDPOINT string = useExistingAiProject ? existingAiProject!.outputs.AZURE_AI_PROJECT_ENDPOINT : aiProject!.outputs.AZURE_AI_PROJECT_ENDPOINT
+output FOUNDRY_PROJECT_ENDPOINT string = useExistingAiProject ? existingAiProject!.outputs.FOUNDRY_PROJECT_ENDPOINT : aiProject!.outputs.FOUNDRY_PROJECT_ENDPOINT
+output AZURE_OPENAI_ENDPOINT string = useExistingAiProject ? existingAiProject!.outputs.AZURE_OPENAI_ENDPOINT : aiProject!.outputs.AZURE_OPENAI_ENDPOINT
+output APPLICATIONINSIGHTS_CONNECTION_STRING string = useExistingAiProject ? existingAiProject!.outputs.APPLICATIONINSIGHTS_CONNECTION_STRING : aiProject!.outputs.APPLICATIONINSIGHTS_CONNECTION_STRING
+output APPLICATIONINSIGHTS_RESOURCE_ID string = useExistingAiProject ? existingAiProject!.outputs.APPLICATIONINSIGHTS_RESOURCE_ID : aiProject!.outputs.APPLICATIONINSIGHTS_RESOURCE_ID
 
 // Dependent Resources and Connections
 
 // ACR
-output AZURE_AI_PROJECT_ACR_CONNECTION_NAME string = shouldCreateAcrForExistingProject ? acrForExistingProject.outputs.containerRegistryConnectionName : (useExistingAiProject ? existingAiProject.outputs.dependentResources.registry.connectionName : aiProject.outputs.dependentResources.registry.connectionName)
-output AZURE_CONTAINER_REGISTRY_ENDPOINT string = shouldCreateAcrForExistingProject ? acrForExistingProject.outputs.containerRegistryLoginServer : (useExistingAiProject ? existingAiProject.outputs.dependentResources.registry.loginServer : aiProject.outputs.dependentResources.registry.loginServer)
+output AZURE_AI_PROJECT_ACR_CONNECTION_NAME string = shouldCreateAcrForExistingProject ? acrForExistingProject!.outputs.containerRegistryConnectionName : (useExistingAiProject ? existingAiProject!.outputs.dependentResources.registry.connectionName : aiProject!.outputs.dependentResources.registry.connectionName)
+output AZURE_CONTAINER_REGISTRY_ENDPOINT string = shouldCreateAcrForExistingProject ? acrForExistingProject!.outputs.containerRegistryLoginServer : (useExistingAiProject ? existingAiProject!.outputs.dependentResources.registry.loginServer : aiProject!.outputs.dependentResources.registry.loginServer)
 
 // Bing Search
-output BING_GROUNDING_CONNECTION_NAME  string = useExistingAiProject ? existingAiProject.outputs.dependentResources.bing_grounding.connectionName : aiProject.outputs.dependentResources.bing_grounding.connectionName
-output BING_GROUNDING_RESOURCE_NAME string = useExistingAiProject ? existingAiProject.outputs.dependentResources.bing_grounding.name : aiProject.outputs.dependentResources.bing_grounding.name
-output BING_GROUNDING_CONNECTION_ID string = useExistingAiProject ? existingAiProject.outputs.dependentResources.bing_grounding.connectionId : aiProject.outputs.dependentResources.bing_grounding.connectionId
+output BING_GROUNDING_CONNECTION_NAME  string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.bing_grounding.connectionName : aiProject!.outputs.dependentResources.bing_grounding.connectionName
+output BING_GROUNDING_RESOURCE_NAME string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.bing_grounding.name : aiProject!.outputs.dependentResources.bing_grounding.name
+output BING_GROUNDING_CONNECTION_ID string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.bing_grounding.connectionId : aiProject!.outputs.dependentResources.bing_grounding.connectionId
 
 // Bing Custom Search
-output BING_CUSTOM_GROUNDING_CONNECTION_NAME string = useExistingAiProject ? existingAiProject.outputs.dependentResources.bing_custom_grounding.connectionName : aiProject.outputs.dependentResources.bing_custom_grounding.connectionName
-output BING_CUSTOM_GROUNDING_NAME string = useExistingAiProject ? existingAiProject.outputs.dependentResources.bing_custom_grounding.name : aiProject.outputs.dependentResources.bing_custom_grounding.name
-output BING_CUSTOM_GROUNDING_CONNECTION_ID string = useExistingAiProject ? existingAiProject.outputs.dependentResources.bing_custom_grounding.connectionId : aiProject.outputs.dependentResources.bing_custom_grounding.connectionId
+output BING_CUSTOM_GROUNDING_CONNECTION_NAME string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.bing_custom_grounding.connectionName : aiProject!.outputs.dependentResources.bing_custom_grounding.connectionName
+output BING_CUSTOM_GROUNDING_NAME string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.bing_custom_grounding.name : aiProject!.outputs.dependentResources.bing_custom_grounding.name
+output BING_CUSTOM_GROUNDING_CONNECTION_ID string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.bing_custom_grounding.connectionId : aiProject!.outputs.dependentResources.bing_custom_grounding.connectionId
 
 // Azure AI Search
-output AZURE_AI_SEARCH_CONNECTION_NAME string = useExistingAiProject ? existingAiProject.outputs.dependentResources.search.connectionName : aiProject.outputs.dependentResources.search.connectionName
-output AZURE_AI_SEARCH_SERVICE_NAME string = useExistingAiProject ? existingAiProject.outputs.dependentResources.search.serviceName : aiProject.outputs.dependentResources.search.serviceName
+output AZURE_AI_SEARCH_CONNECTION_NAME string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.search.connectionName : aiProject!.outputs.dependentResources.search.connectionName
+output AZURE_AI_SEARCH_SERVICE_NAME string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.search.serviceName : aiProject!.outputs.dependentResources.search.serviceName
 
 // Azure Storage
-output AZURE_STORAGE_CONNECTION_NAME string = useExistingAiProject ? existingAiProject.outputs.dependentResources.storage.connectionName : aiProject.outputs.dependentResources.storage.connectionName
-output AZURE_STORAGE_ACCOUNT_NAME string = useExistingAiProject ? existingAiProject.outputs.dependentResources.storage.accountName : aiProject.outputs.dependentResources.storage.accountName
+output AZURE_STORAGE_CONNECTION_NAME string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.storage.connectionName : aiProject!.outputs.dependentResources.storage.connectionName
+output AZURE_STORAGE_ACCOUNT_NAME string = useExistingAiProject ? existingAiProject!.outputs.dependentResources.storage.accountName : aiProject!.outputs.dependentResources.storage.accountName
 
 // Connections
-output AI_PROJECT_CONNECTION_IDS_JSON string = useExistingAiProject ? string(existingAiProject.outputs.connectionIds) : string(aiProject.outputs.connectionIds)
+output AI_PROJECT_CONNECTION_IDS_JSON string = useExistingAiProject ? string(existingAiProject!.outputs.connectionIds) : string(aiProject!.outputs.connectionIds)

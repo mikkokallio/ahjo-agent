@@ -5,6 +5,7 @@ param location string = resourceGroup().location
 param tags object = {}
 param functionAppName string
 param storageAccountName string
+param aiServicesAccountName string
 param appInsightsConnectionString string = ''
 
 // Storage account (shared key disabled by policy - uses identity-based access)
@@ -60,24 +61,9 @@ resource storageBlobDataOwner 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
-// RBAC: Storage Blob Data Contributor on the cache storage account (stahjoagentcache)
-resource cacheStorage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
-  name: 'stahjoagentcache'
-}
-
-resource cacheBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(cacheStorage.id, functionIdentity.id, 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-  scope: cacheStorage
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-    principalId: functionIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
 // RBAC: Cognitive Services User on the AI account (for LLM summarization)
 resource aiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {
-  name: 'ai-account-mapx4sxw6thvg'
+  name: aiServicesAccountName
 }
 
 resource cogServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -148,6 +134,9 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AzureWebJobsStorage__clientId', value: functionIdentity.properties.clientId }
         { name: 'AZURE_CLIENT_ID', value: functionIdentity.properties.clientId }
         { name: 'AZURE_AI_MODEL_DEPLOYMENT_NAME', value: 'gpt-5.4' }
+        { name: 'AZURE_AI_ENDPOINT', value: 'https://${aiAccount.name}.services.ai.azure.com' }
+        { name: 'AZURE_CONTENT_UNDERSTANDING_ENDPOINT', value: 'https://${aiAccount.name}.cognitiveservices.azure.com' }
+        { name: 'PDF_CACHE_ACCOUNT_URL', value: storage.properties.primaryEndpoints.blob }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
       ]
     }
