@@ -1,4 +1,4 @@
-fastapi>=0.104.0
+fastapi>=0.141.1
 uvicorn>=0.24.0
 httpx>=0.25.0
 azure-identity>=1.15.0
