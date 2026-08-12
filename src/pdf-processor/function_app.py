@@ -14,6 +14,7 @@ import os
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed as _as_completed
+from urllib.parse import urljoin, urlparse
 
 import azure.functions as func
 import httpx
@@ -27,6 +28,7 @@ from bs4 import BeautifulSoup
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 BASE_URL = "https://paatokset.hel.fi"
+ALLOWED_AHJO_HOST = "paatokset.hel.fi"
 BLOB_ACCOUNT_URL = os.environ["PDF_CACHE_ACCOUNT_URL"]
 BLOB_CONTAINER_CACHE = "pdf-cache"
 BLOB_CONTAINER_JOBS = "jobs"
@@ -35,6 +37,17 @@ CONTENT_UNDERSTANDING_ENDPOINT = os.environ["AZURE_CONTENT_UNDERSTANDING_ENDPOIN
 
 _credential = None
 _blob_service = None
+
+
+def _normalize_ahjo_url(value: str) -> str:
+    """Return an absolute Ahjo HTTPS URL or raise ValueError."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Ahjo URL is required")
+    url = urljoin(f"{BASE_URL}/", value.strip())
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != ALLOWED_AHJO_HOST or parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise ValueError("Only https://paatokset.hel.fi URLs are allowed")
+    return url
 
 
 def _get_credential():
@@ -224,7 +237,8 @@ def _update_job_status(job_id: str, status: str, progress: int, total: int, resu
 def _process_single_pdf(att: dict, token_provider) -> dict:
     LARGE_THRESHOLD = 1500
 
-    cache_key = _pdf_cache_key(att["pdf_url"])
+    pdf_url = _normalize_ahjo_url(att["pdf_url"])
+    cache_key = _pdf_cache_key(pdf_url)
 
     # Check cache
     cached = _blob_read(BLOB_CONTAINER_CACHE, cache_key)
@@ -236,8 +250,8 @@ def _process_single_pdf(att: dict, token_provider) -> dict:
 
     # Download
     try:
-        with httpx.Client(timeout=30, follow_redirects=True) as client:
-            pdf_resp = client.get(att["pdf_url"])
+        with httpx.Client(timeout=30, follow_redirects=False) as client:
+            pdf_resp = client.get(pdf_url)
             pdf_resp.raise_for_status()
             pdf_bytes = pdf_resp.content
     except Exception as e:
@@ -252,7 +266,7 @@ def _process_single_pdf(att: dict, token_provider) -> dict:
     if pdf_size_mb > 20:
         logging.info(f"Large PDF ({pdf_size_mb:.1f}MB), using Content Understanding OCR: {att['name']}")
         del pdf_bytes  # Free memory before OCR call
-        ocr_text = _ocr_via_content_understanding(att["pdf_url"], att["name"])
+        ocr_text = _ocr_via_content_understanding(pdf_url, att["name"])
         if ocr_text:
             full_text = ocr_text
         else:
@@ -385,6 +399,10 @@ def process(req: func.HttpRequest) -> func.HttpResponse:
 
     if not case_url:
         return func.HttpResponse(json.dumps({"error": "case_url required"}), status_code=400, mimetype="application/json")
+    try:
+        case_url = _normalize_ahjo_url(case_url)
+    except ValueError as error:
+        return func.HttpResponse(json.dumps({"error": str(error)}), status_code=400, mimetype="application/json")
 
     # Write initial status BEFORE any processing so the job is always findable
     _update_job_status(job_id, "processing", 0, 0)
@@ -399,9 +417,9 @@ def process(req: func.HttpRequest) -> func.HttpResponse:
 
 def _do_process(job_id: str, case_url: str, attachment_numbers: str) -> func.HttpResponse:
     # Parse the case page to find attachments
-    full_case_url = case_url if case_url.startswith("http") else BASE_URL + case_url
+    full_case_url = _normalize_ahjo_url(case_url)
     try:
-        with httpx.Client(timeout=30, follow_redirects=True) as client:
+        with httpx.Client(timeout=30, follow_redirects=False) as client:
             resp = client.get(full_case_url)
             resp.raise_for_status()
     except Exception as e:
@@ -418,7 +436,11 @@ def _do_process(job_id: str, case_url: str, attachment_numbers: str) -> func.Htt
                 for att_div in container.find_all("div", class_="issue__attachment"):
                     link = att_div.find("a", href=True)
                     if link:
-                        pdf_url = link.get("href", "")
+                        try:
+                            pdf_url = _normalize_ahjo_url(link.get("href", ""))
+                        except ValueError:
+                            logging.warning("Ignoring non-Ahjo attachment URL")
+                            continue
                         name_text = link.get_text(strip=True)
                         num_match = re.match(r"^(\d+)\.\s*(.+)", name_text)
                         num = int(num_match.group(1)) if num_match else len(all_attachments) + 1
@@ -546,11 +568,15 @@ def cache_check(req: func.HttpRequest) -> func.HttpResponse:
     case_url = body.get("case_url", "")
     if not case_url:
         return func.HttpResponse(json.dumps({"error": "case_url required"}), status_code=400, mimetype="application/json")
+    try:
+        case_url = _normalize_ahjo_url(case_url)
+    except ValueError as error:
+        return func.HttpResponse(json.dumps({"error": str(error)}), status_code=400, mimetype="application/json")
 
     # Parse the case page to find attachments
-    full_case_url = case_url if case_url.startswith("http") else BASE_URL + case_url
+    full_case_url = _normalize_ahjo_url(case_url)
     try:
-        with httpx.Client(timeout=30, follow_redirects=True) as client:
+        with httpx.Client(timeout=30, follow_redirects=False) as client:
             resp = client.get(full_case_url)
             resp.raise_for_status()
     except Exception as e:
@@ -566,7 +592,11 @@ def cache_check(req: func.HttpRequest) -> func.HttpResponse:
                 for att_div in container.find_all("div", class_="issue__attachment"):
                     link = att_div.find("a", href=True)
                     if link:
-                        pdf_url = link.get("href", "")
+                        try:
+                            pdf_url = _normalize_ahjo_url(link.get("href", ""))
+                        except ValueError:
+                            logging.warning("Ignoring non-Ahjo attachment URL")
+                            continue
                         name_text = link.get_text(strip=True)
                         num_match = re.match(r"^(\d+)\.\s*(.+)", name_text)
                         num = int(num_match.group(1)) if num_match else len(all_attachments) + 1

@@ -4,10 +4,10 @@ This uses FoundryChatClient + ResponsesHostServer which handles the
 Responses protocol, Playground compatibility, and streaming automatically.
 """
 
-import json
 import os
 import re
 from datetime import datetime, timedelta
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from agent_framework import Agent, tool
@@ -22,11 +22,27 @@ from typing_extensions import Annotated
 load_dotenv()
 
 BASE_URL = "https://paatokset.hel.fi"
+ALLOWED_AHJO_HOST = "paatokset.hel.fi"
 SEARCH_ENDPOINT = os.environ["AZURE_AI_SEARCH_ENDPOINT"]
 AI_ENDPOINT = os.environ["AZURE_AI_ENDPOINT"]
 EMBEDDING_DEPLOYMENT = os.environ.get("AZURE_AI_EMBEDDING_DEPLOYMENT_NAME", "embed-v-4-0")
 
 _credential = None
+
+
+def _normalize_ahjo_url(value: str) -> str:
+    """Return an absolute Ahjo HTTPS URL or raise ValueError."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Ahjo URL is required")
+    url = urljoin(f"{BASE_URL}/", value.strip())
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != ALLOWED_AHJO_HOST or parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise ValueError("Only https://paatokset.hel.fi URLs are allowed")
+    return url
+
+
+def _function_headers(function_key: str) -> dict[str, str]:
+    return {"x-functions-key": function_key} if function_key else {}
 
 
 def _get_credential():
@@ -92,7 +108,7 @@ def get_meeting_agenda(
     """Get the agenda or decisions for a meeting of a given policymaker/committee. Uses the policymaker code to look up the meeting page on paatokset.hel.fi. Optionally specify a date to get a specific past or future meeting."""
 
     # First, find the meeting for this policymaker from the API
-    with httpx.Client(timeout=30, follow_redirects=True) as client:
+    with httpx.Client(timeout=30, follow_redirects=False) as client:
         # Get meetings - search from 2025 to cover past meetings
         resp = client.get(f"{BASE_URL}/fi/ahjo_api/meetings", params={"from": "2025-01-01"})
         resp.raise_for_status()
@@ -152,7 +168,7 @@ def get_meeting_agenda(
         meeting_url = meeting_url.split("#")[0]
 
         # Fetch the meeting page
-        full_url = meeting_url if meeting_url.startswith("http") else BASE_URL + meeting_url
+        full_url = _normalize_ahjo_url(meeting_url)
         page_resp = client.get(full_url)
         page_resp.raise_for_status()
 
@@ -203,10 +219,9 @@ def get_item_attachments(
 ) -> str:
     """Get the list of attachments for a specific agenda item/decision. Takes the case URL from get_meeting_agenda output. Returns attachment names and availability status (some are not published online)."""
 
-    if not case_url.startswith("http"):
-        case_url = BASE_URL + case_url
+    case_url = _normalize_ahjo_url(case_url)
 
-    with httpx.Client(timeout=30, follow_redirects=True) as client:
+    with httpx.Client(timeout=30, follow_redirects=False) as client:
         resp = client.get(case_url)
         resp.raise_for_status()
 
@@ -284,12 +299,10 @@ def check_attachment_cache(
         return "[Configuration error: PDF_PROCESSOR_URL not set.]"
 
     url = f"{func_url}/api/cache-check"
-    if func_key:
-        url += f"?code={func_key}"
 
     try:
         with httpx.Client(timeout=15) as client:
-            resp = client.post(url, json={"case_url": case_url})
+            resp = client.post(url, headers=_function_headers(func_key), json={"case_url": case_url})
             resp.raise_for_status()
             data = resp.json()
 
@@ -347,14 +360,12 @@ def read_attachment(
     }
 
     url = f"{func_url}/api/process"
-    if func_key:
-        url += f"?code={func_key}"
 
     _t0 = _time.time()
     try:
         # Give the function 60 seconds - summarization of large docs takes time
         with httpx.Client(timeout=60) as client:
-            resp = client.post(url, json=payload)
+            resp = client.post(url, headers=_function_headers(func_key), json=payload)
             resp.raise_for_status()
             result = resp.json()
             _elapsed = _time.time() - _t0
@@ -363,9 +374,7 @@ def read_attachment(
             # If it completed, fetch the full results via the status endpoint
             if result.get("status") == "completed":
                 status_url = f"{func_url}/api/status/{job_id}"
-                if func_key:
-                    status_url += f"?code={func_key}"
-                status_resp = client.get(status_url, timeout=30)
+                status_resp = client.get(status_url, headers=_function_headers(func_key), timeout=30)
                 if status_resp.status_code == 200:
                     data = status_resp.json()
                     results = data.get("results", [])
@@ -400,12 +409,10 @@ def get_attachment_results(
         return "[Configuration error: PDF_PROCESSOR_URL not set.]"
 
     status_url = f"{func_url}/api/status/{job_id}"
-    if func_key:
-        status_url += f"?code={func_key}"
 
     try:
         with httpx.Client(timeout=30) as client:
-            resp = client.get(status_url)
+            resp = client.get(status_url, headers=_function_headers(func_key))
             if resp.status_code == 404:
                 return f"Job '{job_id}' not found. It may not have started yet or the ID is incorrect."
             resp.raise_for_status()
@@ -434,7 +441,7 @@ def get_attachment_results(
 def _format_attachment_results(case_url: str, results: list, total: int) -> str:
     """Format processed attachment results into a readable string."""
     if not results:
-        return f"No readable attachments found."
+        return "No readable attachments found."
 
     cached_count = sum(1 for d in results if d.get("cached"))
     unpublished = [d for d in results if d.get("unpublished")]

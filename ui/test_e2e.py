@@ -61,12 +61,9 @@ def test_chat_streaming():
             # Check for error
             error_el = page.query_selector(".status-msg.error")
             if error_el:
-                print(f"[FAIL] Error: {error_el.inner_text()}")
-                break
+                raise AssertionError(f"Chat failed: {error_el.inner_text()}")
         else:
-            print("[FAIL] Timed out waiting for response")
-            browser.close()
-            return
+            raise AssertionError("Timed out waiting for response")
 
         # Wait for completion (stream done)
         time.sleep(2)
@@ -82,12 +79,11 @@ def test_chat_streaming():
 
         # Get final response
         messages = page.query_selector_all(".message.assistant")
-        if messages:
-            final_text = messages[-1].inner_text()
-            print(f"\n[OK] Final response ({len(final_text)} chars):")
-            print(final_text[:300])
-        else:
-            print("[FAIL] No assistant message found")
+        assert messages, "No assistant message found"
+        final_text = messages[-1].inner_text()
+        assert final_text.strip(), "Assistant response was empty"
+        print(f"\n[OK] Final response ({len(final_text)} chars):")
+        print(final_text[:300])
 
         print(f"\n[OK] Status updates seen: {statuses}")
         browser.close()

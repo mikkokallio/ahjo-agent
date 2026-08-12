@@ -4,6 +4,39 @@ from unittest.mock import Mock, patch
 import function_app
 
 
+class AhjoUrlValidationTests(unittest.TestCase):
+    def test_accepts_absolute_and_relative_ahjo_https_urls(self):
+        self.assertEqual(
+            function_app._normalize_ahjo_url("/fi/asia/test"),
+            "https://paatokset.hel.fi/fi/asia/test",
+        )
+        self.assertEqual(
+            function_app._normalize_ahjo_url("https://paatokset.hel.fi/fi/asia/test"),
+            "https://paatokset.hel.fi/fi/asia/test",
+        )
+
+    def test_rejects_non_https_external_and_credentialed_urls(self):
+        rejected = (
+            "http://paatokset.hel.fi/fi/asia/test",
+            "https://example.com/fi/asia/test",
+            "http://169.254.169.254/latest/meta-data",
+            "https://user@paatokset.hel.fi/fi/asia/test",
+            "https://paatokset.hel.fi:8443/fi/asia/test",
+        )
+        for value in rejected:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                function_app._normalize_ahjo_url(value)
+
+    def test_process_rejects_invalid_case_url_before_side_effects(self):
+        request = Mock()
+        request.get_json.return_value = {"case_url": "http://169.254.169.254/latest/meta-data"}
+
+        response = function_app.process(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("paatokset.hel.fi", response.get_body().decode())
+
+
 class SummarizationBudgetTests(unittest.TestCase):
     def _response(self, finish_reason: str, content: str = "Complete summary.") -> Mock:
         response = Mock()

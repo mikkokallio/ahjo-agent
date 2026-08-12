@@ -8,7 +8,6 @@ Uses:
 
 import os
 import sys
-import json
 import pdfplumber
 import httpx
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider

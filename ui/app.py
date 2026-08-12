@@ -6,9 +6,9 @@ import logging
 import os
 import re
 import time
-import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from azure.identity import DefaultAzureCredential
@@ -27,6 +27,7 @@ logger = logging.getLogger("ahjo-ui")
 app = FastAPI(title="Ahjo Agent UI")
 
 BASE_URL = "https://paatokset.hel.fi"
+ALLOWED_AHJO_HOST = "paatokset.hel.fi"
 AGENT_ENDPOINT = os.environ.get("AGENT_ENDPOINT", "")
 
 _credential = None
@@ -34,6 +35,21 @@ _cached_token: str | None = None
 _token_expires_at: float = 0  # epoch seconds
 _threads: dict[str, list] = {}  # meeting_key -> list of messages
 _agent_client: httpx.AsyncClient | None = None
+
+
+def _normalize_ahjo_url(value: str) -> str:
+    """Return an absolute Ahjo HTTPS URL or raise ValueError."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Ahjo URL is required")
+    url = urljoin(f"{BASE_URL}/", value.strip())
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != ALLOWED_AHJO_HOST or parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise ValueError("Only https://paatokset.hel.fi URLs are allowed")
+    return url
+
+
+def _function_headers() -> dict[str, str]:
+    return {"x-functions-key": PDF_PROCESSOR_KEY} if PDF_PROCESSOR_KEY else {}
 
 
 def _get_credential():
@@ -483,17 +499,18 @@ async def get_agenda(meeting_link: str = "", policymaker: str = "", policymaker_
 
     if not meeting_link:
         return JSONResponse({"items": []})
+    try:
+        full_url = _normalize_ahjo_url(meeting_link.split("#")[0])
+    except ValueError as error:
+        return JSONResponse({"error": str(error), "items": []}, status_code=400)
 
     # Return from cache if available
-    cached_items = db_get_agenda(meeting_link)
+    cached_items = db_get_agenda(full_url)
     if cached_items is not None:
-        return JSONResponse({"items": cached_items, "meeting_url": meeting_link, "cached": True})
-
-    full_url = meeting_link if meeting_link.startswith("http") else BASE_URL + meeting_link
-    full_url = full_url.split("#")[0]
+        return JSONResponse({"items": cached_items, "meeting_url": full_url, "cached": True})
 
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             resp = await client.get(full_url)
             resp.raise_for_status()
     except Exception as e:
@@ -511,7 +528,10 @@ async def get_agenda(meeting_link: str = "", policymaker: str = "", policymaker_
             if div:
                 link = div.find("a", href=True)
                 if link:
-                    case_url = link.get("href", "")
+                    try:
+                        case_url = _normalize_ahjo_url(link.get("href", ""))
+                    except ValueError:
+                        case_url = ""
             num_match = re.match(r"^(\d+)", text)
             num = int(num_match.group(1)) if num_match else len(items) + 1
             items.append({"num": num, "title": text, "case_url": case_url})
@@ -520,7 +540,10 @@ async def get_agenda(meeting_link: str = "", policymaker: str = "", policymaker_
     if not items:
         seen = set()
         for link in soup.find_all("a", href=re.compile(r"/fi/asia/")):
-            case_url = link.get("href", "")
+            try:
+                case_url = _normalize_ahjo_url(link.get("href", ""))
+            except ValueError:
+                continue
             if case_url in seen:
                 continue
             seen.add(case_url)
@@ -530,7 +553,7 @@ async def get_agenda(meeting_link: str = "", policymaker: str = "", policymaker_
 
     # Cache permanently (agendas don't change once published)
     if items:
-        db_put_agenda(meeting_link, items)
+        db_put_agenda(full_url, items)
 
     return JSONResponse({"items": items, "meeting_url": full_url})
 
@@ -546,6 +569,10 @@ async def get_attachments_bulk(request: Request):
 
     results = {}
     for url in case_urls:
+        try:
+            _normalize_ahjo_url(url)
+        except ValueError:
+            continue
         cached = db_get_attachments(url)
         if cached is not None:
             results[url] = cached
@@ -562,6 +589,10 @@ async def get_attachments(case_url: str):
     """Get attachments for a case URL, including cache status from PDF processor."""
     if not case_url:
         return JSONResponse({"attachments": []})
+    try:
+        _normalize_ahjo_url(case_url)
+    except ValueError as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
 
     # Return from cache if available
     cached_atts = db_get_attachments(case_url)
@@ -574,11 +605,11 @@ async def get_attachments(case_url: str):
 
 async def _scrape_attachments(case_url: str) -> list:
     """Scrape attachments from a case page and cache the result."""
-    full_url = case_url if case_url.startswith("http") else BASE_URL + case_url
+    full_url = _normalize_ahjo_url(case_url)
 
     # Parse attachments from the case page
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             resp = await client.get(full_url)
             resp.raise_for_status()
     except Exception:
@@ -594,7 +625,11 @@ async def _scrape_attachments(case_url: str) -> list:
                 for att_div in container.find_all("div", class_="issue__attachment"):
                     link = att_div.find("a", href=True)
                     if link:
-                        pdf_url = link.get("href", "")
+                        try:
+                            pdf_url = _normalize_ahjo_url(link.get("href", ""))
+                        except ValueError:
+                            logger.warning("Ignoring non-Ahjo attachment URL")
+                            continue
                         name_text = link.get_text(strip=True)
                         num_match = re.match(r"^(\d+)\.\s*(.+)", name_text)
                         num = int(num_match.group(1)) if num_match else len(attachments) + 1
@@ -613,10 +648,8 @@ async def _scrape_attachments(case_url: str) -> list:
     if attachments:
         try:
             cache_url = f"{PDF_PROCESSOR_URL}/api/cache-check"
-            if PDF_PROCESSOR_KEY:
-                cache_url += f"?code={PDF_PROCESSOR_KEY}"
             async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(cache_url, json={"case_url": case_url})
+                resp = await client.post(cache_url, headers=_function_headers(), json={"case_url": case_url})
                 if resp.status_code == 200:
                     data = resp.json()
                     cache_map = {a["num"]: a for a in data.get("attachments", [])}
@@ -648,10 +681,12 @@ async def process_attachment(request: Request):
 
     if not case_url or attachment_num is None:
         return JSONResponse({"error": "case_url and attachment_num required"}, status_code=400)
+    try:
+        _normalize_ahjo_url(case_url)
+    except ValueError as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
 
     process_url = f"{PDF_PROCESSOR_URL}/api/process"
-    if PDF_PROCESSOR_KEY:
-        process_url += f"?code={PDF_PROCESSOR_KEY}"
 
     payload = {
         "case_url": case_url,
@@ -660,7 +695,7 @@ async def process_attachment(request: Request):
 
     try:
         async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(process_url, json=payload)
+            resp = await client.post(process_url, headers=_function_headers(), json=payload)
             result = resp.json()
             # Invalidate attachment cache so next load gets fresh data
             db_invalidate_attachments(case_url)
@@ -668,9 +703,7 @@ async def process_attachment(request: Request):
             # Fetch the job status to get the actual summary text
             if resp.status_code == 200 and result.get("job_id"):
                 status_url = f"{PDF_PROCESSOR_URL}/api/status/{result['job_id']}"
-                if PDF_PROCESSOR_KEY:
-                    status_url += f"?code={PDF_PROCESSOR_KEY}"
-                status_resp = await client.get(status_url)
+                status_resp = await client.get(status_url, headers=_function_headers())
                 if status_resp.status_code == 200:
                     status_data = status_resp.json()
                     # Find the processed attachment in results
@@ -691,11 +724,9 @@ async def process_attachment(request: Request):
 async def _read_blob_summary(case_url: str, attachment_num: int) -> dict | None:
     """Read a cached summary via the PDF processor HTTP endpoint."""
     process_url = f"{PDF_PROCESSOR_URL}/api/process"
-    if PDF_PROCESSOR_KEY:
-        process_url += f"?code={PDF_PROCESSOR_KEY}"
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(process_url, json={
+            resp = await client.post(process_url, headers=_function_headers(), json={
                 "case_url": case_url,
                 "attachment_numbers": str(attachment_num),
             })
@@ -706,9 +737,7 @@ async def _read_blob_summary(case_url: str, attachment_num: int) -> dict | None:
             if not job_id:
                 return None
             status_url = f"{PDF_PROCESSOR_URL}/api/status/{job_id}"
-            if PDF_PROCESSOR_KEY:
-                status_url += f"?code={PDF_PROCESSOR_KEY}"
-            status_resp = await client.get(status_url)
+            status_resp = await client.get(status_url, headers=_function_headers())
             if status_resp.status_code == 200:
                 for att_result in status_resp.json().get("results", []):
                     if att_result.get("num") == attachment_num:
@@ -739,11 +768,9 @@ async def _prefetch_summaries(results: dict):
 
     async def fetch_case(case_url: str, att_nums: list[int]):
         process_url = f"{PDF_PROCESSOR_URL}/api/process"
-        if PDF_PROCESSOR_KEY:
-            process_url += f"?code={PDF_PROCESSOR_KEY}"
         try:
             async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(process_url, json={
+                resp = await client.post(process_url, headers=_function_headers(), json={
                     "case_url": case_url,
                     "attachment_numbers": ",".join(str(n) for n in att_nums),
                 })
@@ -754,9 +781,7 @@ async def _prefetch_summaries(results: dict):
                 if not job_id:
                     return
                 status_url = f"{PDF_PROCESSOR_URL}/api/status/{job_id}"
-                if PDF_PROCESSOR_KEY:
-                    status_url += f"?code={PDF_PROCESSOR_KEY}"
-                status_resp = await client.get(status_url)
+                status_resp = await client.get(status_url, headers=_function_headers())
                 if status_resp.status_code != 200:
                     return
                 for att_result in status_resp.json().get("results", []):
@@ -785,6 +810,10 @@ async def attachment_summary(request: Request):
 
     if not case_url or attachment_num is None:
         return JSONResponse({"error": "case_url and attachment_num required"}, status_code=400)
+    try:
+        _normalize_ahjo_url(case_url)
+    except ValueError as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
 
     # 1. Check local SQLite/memory cache (instant, sub-ms)
     cached = db_get_summary(case_url, attachment_num)

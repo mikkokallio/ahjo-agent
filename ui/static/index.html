@@ -868,28 +868,43 @@ function renderMeetings() {
     return;
   }
 
-  container.innerHTML = dates.map(dateStr => {
+  container.replaceChildren();
+  dates.forEach(dateStr => {
     const meetings = state.meetings[dateStr];
     const [y, m, d] = dateStr.split('-');
     const label = `${d}.${m}.`;
-    return `
-      <div class="date-group" data-date="${dateStr}">
-        <div class="date-header" onclick="toggleGroup(this)">
-          <span class="chevron">&#9662;</span>
-          <span>${label}</span>
-          <span class="count">(${meetings.length})</span>
-        </div>
-        <div class="date-meetings">
-          ${meetings.map(m => `
-            <div class="meeting-item" data-key="${dateStr}_${m.policymaker}" onclick="selectMeeting('${dateStr}', '${m.policymaker}')">
-              ${m.policymaker_name}
-              <div class="time">${m.start_time || ''}</div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
-  }).join('');
+    const group = document.createElement('div');
+    group.className = 'date-group';
+    group.dataset.date = dateStr;
+
+    const header = document.createElement('div');
+    header.className = 'date-header';
+    header.addEventListener('click', () => toggleGroup(header));
+    for (const [className, text] of [['chevron', '\u25BE'], ['', label], ['count', `(${meetings.length})`]]) {
+      const span = document.createElement('span');
+      if (className) span.className = className;
+      span.textContent = text;
+      header.appendChild(span);
+    }
+    group.appendChild(header);
+
+    const meetingList = document.createElement('div');
+    meetingList.className = 'date-meetings';
+    meetings.forEach(meeting => {
+      const item = document.createElement('div');
+      item.className = 'meeting-item';
+      item.dataset.key = `${dateStr}_${meeting.policymaker}`;
+      item.append(document.createTextNode(meeting.policymaker_name || ''));
+      const time = document.createElement('div');
+      time.className = 'time';
+      time.textContent = meeting.start_time || '';
+      item.appendChild(time);
+      item.addEventListener('click', () => selectMeeting(dateStr, meeting.policymaker));
+      meetingList.appendChild(item);
+    });
+    group.appendChild(meetingList);
+    container.appendChild(group);
+  });
 }
 
 function toggleGroup(el) {
@@ -987,7 +1002,7 @@ async function prefetchAttachments() {
         const idx = state.agenda.indexOf(item);
         const attContainer = document.getElementById(`att-${idx}`);
         if (attContainer && !attContainer.querySelector('.attachment-item')) {
-          attContainer.innerHTML = renderAttachments(idx, atts);
+          renderAttachments(attContainer, idx, atts);
         }
       }
     }
@@ -1012,10 +1027,14 @@ function renderAgenda() {
         <span class="agenda-title">${escapeHtml(parsed.title)}</span>
       </div>
       <div class="agenda-attachments" id="att-${idx}">
-        ${state.attachments[item.case_url] ? renderAttachments(idx, state.attachments[item.case_url]) : ''}
       </div>
     </div>
   `}).join('');
+  state.agenda.forEach((item, idx) => {
+    if (state.attachments[item.case_url]) {
+      renderAttachments(document.getElementById(`att-${idx}`), idx, state.attachments[item.case_url]);
+    }
+  });
 }
 
 function parseAgendaTitle(title) {
@@ -1072,41 +1091,54 @@ async function loadAttachments(idx, caseUrl) {
     const resp = await fetch(`/api/attachments?case_url=${encodeURIComponent(caseUrl)}`);
     const data = await resp.json();
     state.attachments[caseUrl] = data.attachments || [];
-    attContainer.innerHTML = renderAttachments(idx, state.attachments[caseUrl]);
+    renderAttachments(attContainer, idx, state.attachments[caseUrl]);
   } catch (e) {
     attContainer.innerHTML = '<div class="att-loading">Virhe.</div>';
   }
 }
 
-function renderAttachments(agendaIdx, attachments) {
+function renderAttachments(container, agendaIdx, attachments) {
+  container.replaceChildren();
   if (!attachments || !attachments.length) {
-    return '<div class="att-loading">Ei liitteitä.</div>';
+    const empty = document.createElement('div');
+    empty.className = 'att-loading';
+    empty.textContent = 'Ei liitteitä.';
+    container.appendChild(empty);
+    return;
   }
 
-  return attachments.map((att, attIdx) => {
+  attachments.forEach((att, attIdx) => {
     const isActive = state.selectedAgendaItem === agendaIdx && state.selectedAttachment === attIdx;
     const unpublished = !att.published;
-    let cls = 'attachment-item';
-    if (isActive) cls += ' active';
-    if (unpublished) cls += ' unpublished';
+    const item = document.createElement('div');
+    item.className = 'attachment-item';
+    if (isActive) item.classList.add('active');
+    if (unpublished) item.classList.add('unpublished');
+    item.title = att.name || '';
+    if (!unpublished) item.addEventListener('click', () => selectAttachment(agendaIdx, attIdx));
 
-    let meta = '';
+    const name = document.createElement('span');
+    name.className = 'attachment-name';
+    name.textContent = `${att.num}. ${att.name || ''}`;
+    item.appendChild(name);
+
+    const meta = document.createElement('span');
+    meta.className = 'attachment-meta';
+    const badge = document.createElement('span');
+    badge.className = 'attachment-badge';
     if (att.cached && att.pages > 0) {
-      meta += `<span class="attachment-badge cached">${att.pages} s.</span>`;
+      badge.classList.add('cached');
+      badge.textContent = `${att.pages} s.`;
     } else if (att.cached && (att.pages === 0 || att.category === 'skipped')) {
-      meta += '<span class="attachment-badge skipped">ohitettu</span>';
+      badge.classList.add('skipped');
+      badge.textContent = 'ohitettu';
     } else if (unpublished) {
-      meta += '<span class="attachment-badge">ei julkaistu</span>';
+      badge.textContent = 'ei julkaistu';
     }
-
-    const onclick = unpublished ? '' : `onclick="selectAttachment(${agendaIdx}, ${attIdx})"`;
-    return `
-      <div class="${cls}" ${onclick} title="${escapeHtml(att.name)}">
-        <span class="attachment-name">${att.num}. ${escapeHtml(att.name)}</span>
-        <span class="attachment-meta">${meta}</span>
-      </div>
-    `;
-  }).join('');
+    if (badge.textContent) meta.appendChild(badge);
+    item.appendChild(meta);
+    container.appendChild(item);
+  });
 }
 
 function selectAttachment(agendaIdx, attIdx) {
@@ -1163,8 +1195,10 @@ function openAttachmentModal(att, agendaItem) {
     metaHtml += '<dt>Välimuisti</dt><dd>Käsitelty</dd>';
   }
   if (att.pdf_url) {
-    const fullPdfUrl = att.pdf_url.startsWith('http') ? att.pdf_url : 'https://paatokset.hel.fi' + att.pdf_url;
-    metaHtml += `<dt>PDF</dt><dd><a href="${fullPdfUrl}" target="_blank" rel="noopener" style="color:var(--accent)">Avaa alkuperäinen</a></dd>`;
+    const fullPdfUrl = normalizeAhjoUrl(att.pdf_url);
+    if (fullPdfUrl) {
+      metaHtml += `<dt>PDF</dt><dd><a id="modal-pdf-link" target="_blank" rel="noopener" style="color:var(--accent)">Avaa alkuperäinen</a></dd>`;
+    }
   }
   metaHtml += '</dl>';
 
@@ -1191,6 +1225,8 @@ function openAttachmentModal(att, agendaItem) {
   }
 
   body.innerHTML = metaHtml + summaryHtml;
+  const pdfLink = document.getElementById('modal-pdf-link');
+  if (pdfLink) pdfLink.href = normalizeAhjoUrl(att.pdf_url);
   modal.classList.add('open');
   // Store current attachment context for the process button
   modal._currentAtt = att;
@@ -1309,7 +1345,7 @@ async function processAttachment() {
       if (agendaIdx >= 0) {
         const attContainer = document.getElementById(`att-${agendaIdx}`);
         if (attContainer) {
-          attContainer.innerHTML = renderAttachments(agendaIdx, state.attachments[caseUrl]);
+          renderAttachments(attContainer, agendaIdx, state.attachments[caseUrl]);
         }
       }
     } else {
@@ -1393,6 +1429,16 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function normalizeAhjoUrl(value) {
+  try {
+    const url = new URL(value, 'https://paatokset.hel.fi/');
+    if (url.protocol !== 'https:' || url.hostname !== 'paatokset.hel.fi' || url.port || url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 function renderMarkdown(text) {
