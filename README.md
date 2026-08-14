@@ -23,7 +23,7 @@ The PDF processor downloads published attachments and extracts text with `pdfplu
 
 ## Run Locally
 
-Prerequisites: Python 3.13, Azure CLI, access to the deployed Foundry project and PDF processor.
+Prerequisites: Python 3.13, PowerShell 7, Azure CLI, and access to an existing deployed Foundry agent, PDF processor, and Azure AI Search service.
 
 ```powershell
 az login
@@ -40,6 +40,27 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8000
 
 Open `http://127.0.0.1:8000`.
 
+### Strategy Source And Index
+
+The Helsinki City Strategy PDF is third-party source material and is not distributed in this repository. Download the reviewed publication from its [official Helsinki City page](https://www.hel.fi/fi/paatoksenteko-ja-hallinto/strategia-ja-talous/strategia):
+
+```powershell
+.\scripts\download-strategy.ps1
+```
+
+The script only accepts the pinned HTTPS Helsinki source and verifies the reviewed SHA-256 checksum. The resulting `grounding/Kaupunkistrategia-2025-2029.pdf` is ignored by Git.
+
+To create or refresh the strategy search index, authenticate with an identity that can use the configured Foundry embedding deployment and write Azure AI Search documents, then run:
+
+```powershell
+$env:AZURE_AI_ENDPOINT = "<Foundry AI Services endpoint>"
+$env:AZURE_AI_SEARCH_ENDPOINT = "<Azure AI Search endpoint>"
+$env:AZURE_AI_EMBEDDING_DEPLOYMENT_NAME = "embed-v-4-0"
+python .\scripts\index_strategy.py
+```
+
+For an automated setup, use one of the copy-ready prompts in [CODING_AGENT_SETUP.md](CODING_AGENT_SETUP.md): local UI with existing Azure backends, or a complete Azure deployment.
+
 ## Deploy
 
 Infrastructure is defined in `infra/`. The hosted agent is deployed with:
@@ -55,4 +76,4 @@ The UI deploys to a single Linux B1 App Service with Microsoft Entra authenticat
 
 ## License
 
-MIT
+Project code is licensed under the MIT License. Downloaded Helsinki City publications remain the property of their respective rights holder and are not covered by this repository's license.

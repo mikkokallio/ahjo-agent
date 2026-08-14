@@ -21,6 +21,7 @@ ui/cache.db-wal
 
 # Azure
 .azure/
+infra/main.json
 
 # Secrets / credentials
 conn.json
@@ -34,6 +35,9 @@ remediations.json
 playwright-report/
 test-results/
 *.log
+
+# Third-party source material (download with scripts/download-strategy.ps1)
+grounding/Kaupunkistrategia-2025-2029.pdf
 
 # OS
 .DS_Store

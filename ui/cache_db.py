@@ -11,6 +11,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("CACHE_DB_PATH", Path(__file__).parent / "cache.db"))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+ATTACHMENT_CACHE_VERSION = "2"
 
 _local = threading.local()
 
@@ -32,6 +33,12 @@ def _get_conn() -> sqlite3.Connection:
 
 def _init_db(conn: sqlite3.Connection):
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS cache_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS agenda_cache (
             meeting_link TEXT PRIMARY KEY,
             items_json TEXT NOT NULL
@@ -49,6 +56,15 @@ def _init_db(conn: sqlite3.Connection):
             summary_json TEXT NOT NULL
         )
     """)
+    row = conn.execute(
+        "SELECT value FROM cache_metadata WHERE key = 'attachment_cache_version'"
+    ).fetchone()
+    if row is None or row[0] != ATTACHMENT_CACHE_VERSION:
+        conn.execute("DELETE FROM attachments_cache")
+        conn.execute(
+            "INSERT OR REPLACE INTO cache_metadata (key, value) VALUES ('attachment_cache_version', ?)",
+            (ATTACHMENT_CACHE_VERSION,),
+        )
     conn.commit()
 
 

@@ -29,6 +29,7 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 BASE_URL = "https://paatokset.hel.fi"
 ALLOWED_AHJO_HOST = "paatokset.hel.fi"
+ALLOWED_ATTACHMENT_HOSTS = {ALLOWED_AHJO_HOST, "ahjojulkaisu.hel.fi"}
 BLOB_ACCOUNT_URL = os.environ["PDF_CACHE_ACCOUNT_URL"]
 BLOB_CONTAINER_CACHE = "pdf-cache"
 BLOB_CONTAINER_JOBS = "jobs"
@@ -47,6 +48,17 @@ def _normalize_ahjo_url(value: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname != ALLOWED_AHJO_HOST or parsed.username or parsed.password or parsed.port not in (None, 443):
         raise ValueError("Only https://paatokset.hel.fi URLs are allowed")
+    return url
+
+
+def _normalize_attachment_url(value: str) -> str:
+    """Return a trusted Ahjo document URL or raise ValueError."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Attachment URL is required")
+    url = urljoin(f"{BASE_URL}/", value.strip())
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in ALLOWED_ATTACHMENT_HOSTS or parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise ValueError("Only trusted Helsinki attachment URLs are allowed")
     return url
 
 
@@ -237,7 +249,7 @@ def _update_job_status(job_id: str, status: str, progress: int, total: int, resu
 def _process_single_pdf(att: dict, token_provider) -> dict:
     LARGE_THRESHOLD = 1500
 
-    pdf_url = _normalize_ahjo_url(att["pdf_url"])
+    pdf_url = _normalize_attachment_url(att["pdf_url"])
     cache_key = _pdf_cache_key(pdf_url)
 
     # Check cache
@@ -437,7 +449,7 @@ def _do_process(job_id: str, case_url: str, attachment_numbers: str) -> func.Htt
                     link = att_div.find("a", href=True)
                     if link:
                         try:
-                            pdf_url = _normalize_ahjo_url(link.get("href", ""))
+                            pdf_url = _normalize_attachment_url(link.get("href", ""))
                         except ValueError:
                             logging.warning("Ignoring non-Ahjo attachment URL")
                             continue
@@ -593,7 +605,7 @@ def cache_check(req: func.HttpRequest) -> func.HttpResponse:
                     link = att_div.find("a", href=True)
                     if link:
                         try:
-                            pdf_url = _normalize_ahjo_url(link.get("href", ""))
+                            pdf_url = _normalize_attachment_url(link.get("href", ""))
                         except ValueError:
                             logging.warning("Ignoring non-Ahjo attachment URL")
                             continue

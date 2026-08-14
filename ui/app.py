@@ -28,6 +28,7 @@ app = FastAPI(title="Ahjo Agent UI")
 
 BASE_URL = "https://paatokset.hel.fi"
 ALLOWED_AHJO_HOST = "paatokset.hel.fi"
+ALLOWED_ATTACHMENT_HOSTS = {ALLOWED_AHJO_HOST, "ahjojulkaisu.hel.fi"}
 AGENT_ENDPOINT = os.environ.get("AGENT_ENDPOINT", "")
 
 _credential = None
@@ -45,6 +46,17 @@ def _normalize_ahjo_url(value: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname != ALLOWED_AHJO_HOST or parsed.username or parsed.password or parsed.port not in (None, 443):
         raise ValueError("Only https://paatokset.hel.fi URLs are allowed")
+    return url
+
+
+def _normalize_attachment_url(value: str) -> str:
+    """Return a trusted Ahjo document URL or raise ValueError."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Attachment URL is required")
+    url = urljoin(f"{BASE_URL}/", value.strip())
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in ALLOWED_ATTACHMENT_HOSTS or parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise ValueError("Only trusted Helsinki attachment URLs are allowed")
     return url
 
 
@@ -84,9 +96,26 @@ def _get_agent_client() -> httpx.AsyncClient:
     if _agent_client is None or _agent_client.is_closed:
         _agent_client = httpx.AsyncClient(
             timeout=httpx.Timeout(600, connect=30),
-            http2=True,
         )
     return _agent_client
+
+
+def _response_error_message(event: dict) -> str:
+    error = event.get("error") or event.get("response", {}).get("error") or {}
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("code") or "Agent request failed")
+    return str(error or "Agent request failed")
+
+
+def _completed_response_text(event: dict) -> str:
+    parts = []
+    for item in event.get("response", {}).get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "output_text" and content.get("text"):
+                parts.append(content["text"])
+    return "".join(parts)
 
 
 @app.get("/")
@@ -201,6 +230,9 @@ async def chat(request: Request):
 
     if not user_message:
         return JSONResponse({"error": "message required"}, status_code=400)
+    if not AGENT_ENDPOINT:
+        logger.error("Chat requested without AGENT_ENDPOINT configured")
+        return JSONResponse({"error": "AGENT_ENDPOINT is not configured"}, status_code=503)
 
     # Build thread history
     if meeting_key not in _threads:
@@ -336,23 +368,32 @@ async def chat(request: Request):
 
     async def event_stream():
         assistant_text = ""
+        tool_call_count = 0
         try:
             client = _get_agent_client()
             async with client.stream(
                 "POST", AGENT_ENDPOINT, json=payload, headers=headers
             ) as resp:
+                request_id = resp.headers.get("x-request-id") or resp.headers.get("apim-request-id") or "unknown"
+                logger.info("Agent stream opened: status=%s request_id=%s", resp.status_code, request_id)
                 if resp.status_code != 200:
-                    await resp.aread()
+                    body_text = (await resp.aread()).decode("utf-8", errors="replace")[:1000]
+                    logger.error(
+                        "Agent stream rejected: status=%s request_id=%s body=%s",
+                        resp.status_code,
+                        request_id,
+                        body_text,
+                    )
                     error_msg = f"Agent returned {resp.status_code}"
                     yield f"data: {json.dumps({'type': 'error', 'text': error_msg})}\n\n"
                     thread.append({"role": "assistant", "content": f"[Error: {error_msg}]"})
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
                 # Signal that connection is established
                 yield f"data: {json.dumps({'type': 'status', 'text': 'Käsitellään...'})}\n\n"
 
                 current_tool = None
-                tool_call_count = 0
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -391,13 +432,39 @@ async def chat(request: Request):
 
                     # Response completed
                     elif etype == "response.completed":
-                        pass
+                        if not assistant_text:
+                            completed_text = _completed_response_text(event)
+                            if completed_text:
+                                assistant_text = completed_text
+                                yield f"data: {json.dumps({'type': 'delta', 'text': completed_text})}\n\n"
+
+                    elif etype == "response.failed":
+                        error_msg = _response_error_message(event)
+                        logger.error(
+                            "Agent response failed: request_id=%s tools=%s error=%s",
+                            request_id,
+                            tool_call_count,
+                            error_msg,
+                        )
+                        thread.append({"role": "assistant", "content": f"[Virhe: {error_msg}]"})
+                        yield f"data: {json.dumps({'type': 'error', 'text': error_msg})}\n\n"
+                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                        return
+
+                logger.info(
+                    "Agent stream finished: request_id=%s tools=%s text_chars=%s",
+                    request_id,
+                    tool_call_count,
+                    len(assistant_text),
+                )
 
         except Exception as e:
             error_msg = str(e)
+            logger.exception("Agent stream interrupted after %s text characters", len(assistant_text))
             yield f"data: {json.dumps({'type': 'error', 'text': error_msg})}\n\n"
             if not assistant_text:
                 thread.append({"role": "assistant", "content": f"[Virhe: {error_msg}]"})
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
 
         if assistant_text:
@@ -626,7 +693,7 @@ async def _scrape_attachments(case_url: str) -> list:
                     link = att_div.find("a", href=True)
                     if link:
                         try:
-                            pdf_url = _normalize_ahjo_url(link.get("href", ""))
+                            pdf_url = _normalize_attachment_url(link.get("href", ""))
                         except ValueError:
                             logger.warning("Ignoring non-Ahjo attachment URL")
                             continue

@@ -27,6 +27,19 @@ class AhjoUrlValidationTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 function_app._normalize_ahjo_url(value)
 
+    def test_attachment_urls_allow_only_ahjo_document_hosts(self):
+        self.assertEqual(
+            function_app._normalize_attachment_url("https://ahjojulkaisu.hel.fi/document.pdf"),
+            "https://ahjojulkaisu.hel.fi/document.pdf",
+        )
+        self.assertEqual(
+            function_app._normalize_attachment_url("/document.pdf"),
+            "https://paatokset.hel.fi/document.pdf",
+        )
+        for value in ("https://example.com/document.pdf", "http://ahjojulkaisu.hel.fi/document.pdf"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                function_app._normalize_attachment_url(value)
+
     def test_process_rejects_invalid_case_url_before_side_effects(self):
         request = Mock()
         request.get_json.return_value = {"case_url": "http://169.254.169.254/latest/meta-data"}

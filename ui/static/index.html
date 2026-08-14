@@ -4,25 +4,63 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ahjo</title>
+<script>
+document.documentElement.dataset.theme = localStorage.getItem('ahjo-theme') || 'light';
+</script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
   --bg-deep: #0a0a0f;
-  --bg-surface: rgba(18, 18, 28, 0.7);
-  --bg-glass: rgba(25, 25, 40, 0.5);
+  --bg-surface: rgba(18, 18, 28, 0.94);
+  --bg-glass: rgba(25, 25, 40, 0.72);
   --bg-hover: rgba(45, 45, 70, 0.4);
   --bg-active: rgba(60, 60, 100, 0.3);
   --border: rgba(80, 80, 120, 0.2);
   --border-focus: rgba(120, 120, 180, 0.4);
   --text-primary: #e8e8f0;
-  --text-secondary: #9090a8;
-  --text-muted: #606078;
-  --accent: #7c8cf8;
+  --text-secondary: #b4b4c4;
+  --text-muted: #9696aa;
+  --accent: #8c9bff;
+  --button-bg: #5263c5;
   --accent-dim: rgba(124, 140, 248, 0.1);
+  --accent-border: rgba(124, 140, 248, 0.28);
+  --button-text: #ffffff;
+  --success-bg: rgba(80, 200, 120, 0.12);
+  --success-text: #75d395;
+  --warning-bg: rgba(240, 180, 60, 0.12);
+  --warning-text: #e7b95c;
+  --error-text: #ef8585;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --shadow: rgba(0, 0, 0, 0.5);
   --radius: 12px;
   --radius-sm: 8px;
   --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:root[data-theme="light"] {
+  --bg-deep: #f3f5f7;
+  --bg-surface: rgba(255, 255, 255, 0.96);
+  --bg-glass: rgba(255, 255, 255, 0.92);
+  --bg-hover: #e7ebf0;
+  --bg-active: #dce4f5;
+  --border: #c7ced8;
+  --border-focus: #4057c7;
+  --text-primary: #18212c;
+  --text-secondary: #465363;
+  --text-muted: #5c6878;
+  --accent: #4057c7;
+  --button-bg: #4057c7;
+  --accent-dim: #e5eaff;
+  --accent-border: #aebaf2;
+  --button-text: #ffffff;
+  --success-bg: #e0f2e5;
+  --success-text: #246b3d;
+  --warning-bg: #fff0ce;
+  --warning-text: #7a5200;
+  --error-text: #a72c2c;
+  --overlay: rgba(24, 33, 44, 0.45);
+  --shadow: rgba(24, 33, 44, 0.22);
 }
 
 html, body {
@@ -89,6 +127,12 @@ html, body {
   line-height: 1;
 }
 .pane-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.theme-toggle {
+  min-width: 30px;
+  min-height: 30px;
+  font-size: 18px;
+}
 
 #toggleLeft { display: none; }
 #toggleRight { display: none; }
@@ -264,7 +308,7 @@ html, body {
 .message.user {
   align-self: flex-end;
   background: var(--accent-dim);
-  border: 1px solid rgba(124, 140, 248, 0.15);
+  border: 1px solid var(--accent-border);
   color: var(--text-primary);
 }
 
@@ -355,11 +399,11 @@ html, body {
 .chat-input::placeholder { color: var(--text-muted); }
 
 .chat-send {
-  background: var(--accent);
+  background: var(--button-bg);
   border: none;
   border-radius: var(--radius-sm);
   padding: 10px 16px;
-  color: #fff;
+  color: var(--button-text);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -506,13 +550,13 @@ html, body {
 }
 
 .attachment-badge.cached {
-  background: rgba(80, 200, 120, 0.12);
-  color: rgba(80, 200, 120, 0.8);
+  background: var(--success-bg);
+  color: var(--success-text);
 }
 
 .attachment-badge.skipped {
-  background: rgba(240, 180, 60, 0.12);
-  color: rgba(240, 180, 60, 0.8);
+  background: var(--warning-bg);
+  color: var(--warning-text);
 }
 
 .spinner {
@@ -589,7 +633,7 @@ html, body {
   animation: status-pulse 2s ease-in-out infinite;
 }
 .message.status-msg.error {
-  color: #e06060;
+  color: var(--error-text);
   animation: none;
 }
 @keyframes status-pulse {
@@ -601,7 +645,7 @@ html, body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--overlay);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -627,7 +671,7 @@ html, body {
   max-height: 70vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px var(--shadow);
 }
 
 .modal-header {
@@ -718,11 +762,11 @@ html, body {
 
 .modal-process-btn {
   margin-top: 12px;
-  background: var(--accent);
+  background: var(--button-bg);
   border: none;
   border-radius: var(--radius-sm);
   padding: 8px 16px;
-  color: #fff;
+  color: var(--button-text);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -731,16 +775,43 @@ html, body {
 .modal-process-btn:hover { opacity: 0.9; }
 .modal-process-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* Responsive: hide right pane on small screens */
+/* Responsive drawers keep both panes accessible when zoom reduces the CSS viewport. */
 @media (max-width: 1100px) {
-  #app:not(.right-collapsed) { grid-template-columns: 280px 1fr; }
-  .pane-right { display: none; }
-  #toggleRight { display: none; }
-}
-@media (max-width: 700px) {
   #app { grid-template-columns: 1fr; }
-  .pane-left { display: none; }
-  #toggleLeft { display: none; }
+  #app.left-collapsed,
+  #app.right-collapsed,
+  #app.left-collapsed.right-collapsed { grid-template-columns: 1fr; }
+
+  .pane-left,
+  .pane-right {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 50;
+    width: min(360px, calc(100vw - 48px));
+    opacity: 1;
+    pointer-events: auto;
+    box-shadow: 0 16px 48px var(--shadow);
+    transition: transform 0.2s ease;
+  }
+  .pane-left { left: 0; transform: translateX(-105%); }
+  .pane-right { right: 0; transform: translateX(105%); }
+  #app.left-open .pane-left { transform: translateX(0); }
+  #app.right-open .pane-right { transform: translateX(0); }
+  #app.left-collapsed .pane-left,
+  #app.right-collapsed .pane-right { opacity: 1; pointer-events: auto; }
+
+  #toggleLeft,
+  #toggleRight,
+  #app.left-collapsed #toggleLeft,
+  #app.right-collapsed #toggleRight { display: block; }
+}
+
+@media (max-width: 520px) {
+  .chat-header { padding-inline: 10px; gap: 8px; }
+  .chat-messages { padding: 16px 12px; }
+  .chat-input-area { padding: 12px; }
+  .message { max-width: 94%; }
 }
 </style>
 </head>
@@ -773,6 +844,7 @@ html, body {
         <h1 id="chatTitle">Ahjo</h1>
         <div class="subtitle" id="chatSubtitle">Valitse kokous vasemmalta</div>
       </div>
+      <button class="pane-toggle theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Vaihda tummaan tilaan" aria-label="Vaihda tummaan tilaan">&#9680;</button>
       <button class="pane-toggle" id="toggleRight" onclick="togglePane('right')" title="Sisältö">&#9776;</button>
     </div>
     <div class="chat-messages" id="chatMessages">
@@ -1195,7 +1267,7 @@ function openAttachmentModal(att, agendaItem) {
     metaHtml += '<dt>Välimuisti</dt><dd>Käsitelty</dd>';
   }
   if (att.pdf_url) {
-    const fullPdfUrl = normalizeAhjoUrl(att.pdf_url);
+    const fullPdfUrl = normalizeAttachmentUrl(att.pdf_url);
     if (fullPdfUrl) {
       metaHtml += `<dt>PDF</dt><dd><a id="modal-pdf-link" target="_blank" rel="noopener" style="color:var(--accent)">Avaa alkuperäinen</a></dd>`;
     }
@@ -1226,7 +1298,7 @@ function openAttachmentModal(att, agendaItem) {
 
   body.innerHTML = metaHtml + summaryHtml;
   const pdfLink = document.getElementById('modal-pdf-link');
-  if (pdfLink) pdfLink.href = normalizeAhjoUrl(att.pdf_url);
+  if (pdfLink) pdfLink.href = normalizeAttachmentUrl(att.pdf_url);
   modal.classList.add('open');
   // Store current attachment context for the process button
   modal._currentAtt = att;
@@ -1441,6 +1513,17 @@ function normalizeAhjoUrl(value) {
   }
 }
 
+function normalizeAttachmentUrl(value) {
+  try {
+    const url = new URL(value, 'https://paatokset.hel.fi/');
+    const allowedHosts = new Set(['paatokset.hel.fi', 'ahjojulkaisu.hel.fi']);
+    if (url.protocol !== 'https:' || !allowedHosts.has(url.hostname) || url.port || url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
 function renderMarkdown(text) {
   // Escape HTML first
   let html = escapeHtml(text);
@@ -1525,6 +1608,7 @@ async function sendMessage() {
   const selectionContext = getSelectionContext();
 
   let assistantText = '';
+  let streamError = '';
 
   try {
     const resp = await fetch('/api/chat', {
@@ -1544,7 +1628,12 @@ async function sendMessage() {
     });
 
     if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`);
+      let detail = `HTTP ${resp.status}`;
+      try {
+        const payload = await resp.json();
+        if (payload.error) detail = payload.error;
+      } catch {}
+      throw new Error(detail);
     }
 
     const reader = resp.body.getReader();
@@ -1585,6 +1674,7 @@ async function sendMessage() {
           container.scrollTop = container.scrollHeight;
         } else if (event.type === 'error') {
           clearInterval(timerInterval);
+          streamError = event.text || 'Tuntematon virhe';
           statusEl.textContent = `Virhe: ${event.text}`;
           statusEl.classList.add('error');
         } else if (event.type === 'done') {
@@ -1600,16 +1690,15 @@ async function sendMessage() {
       statusEl.remove();
     }
 
-    if (assistantText) {
-      state.threads[key].push({ role: 'assistant', content: assistantText });
-    } else {
-      state.threads[key].push({ role: 'assistant', content: '[Ei vastausta]' });
-    }
+    const finalText = assistantText || (streamError ? `[Virhe: ${streamError}]` : '[Ei vastausta]');
+    state.threads[key].push({ role: 'assistant', content: finalText });
+    renderThread(key);
   } catch (e) {
     clearInterval(timerInterval);
     statusEl.textContent = `Yhteysvirhe: ${e.message}`;
     statusEl.classList.add('error');
     state.threads[key].push({ role: 'assistant', content: `[Yhteysvirhe: ${e.message}]` });
+    renderThread(key);
   }
 
   state.sending = false;
@@ -1638,10 +1727,34 @@ document.getElementById('chatSend').addEventListener('click', sendMessage);
 
 // --- Pane toggle ---
 function togglePane(side) {
-  document.getElementById('app').classList.toggle(side + '-collapsed');
+  const app = document.getElementById('app');
+  if (window.matchMedia('(max-width: 1100px)').matches) {
+    const openClass = side + '-open';
+    const shouldOpen = !app.classList.contains(openClass);
+    app.classList.remove('left-open', 'right-open');
+    if (shouldOpen) app.classList.add(openClass);
+    return;
+  }
+  app.classList.toggle(side + '-collapsed');
+}
+
+function updateThemeToggle() {
+  const isLight = document.documentElement.dataset.theme === 'light';
+  const button = document.getElementById('themeToggle');
+  button.innerHTML = isLight ? '&#9680;' : '&#9788;';
+  button.title = isLight ? 'Vaihda tummaan tilaan' : 'Vaihda vaaleaan tilaan';
+  button.setAttribute('aria-label', isLight ? 'Vaihda tummaan tilaan' : 'Vaihda vaaleaan tilaan');
+}
+
+function toggleTheme() {
+  const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem('ahjo-theme', theme);
+  updateThemeToggle();
 }
 
 // --- Init ---
+updateThemeToggle();
 loadMeetings();
 </script>
 </body>
