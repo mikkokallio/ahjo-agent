@@ -1,7 +1,7 @@
 azure-functions
 azure-ai-contentunderstanding>=1.0.0
 azure-identity>=1.17.0
-azure-storage-blob>=12.20.0
+azure-storage-blob>=12.30.3
 beautifulsoup4>=4.12.0
 httpx>=0.27.0
 pdfplumber>=0.11.0
